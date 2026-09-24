@@ -6,7 +6,8 @@
 # Configuração comum aos containers do Spark
 x-spark-common: &spark-common
   build:
-    context: ./docker/spark
+    context: ./docker
+    dockerfile: spark/Dockerfile
   image: case-saude/spark:4.1.2
   profiles: ["processing"]
   restart: unless-stopped
@@ -17,6 +18,33 @@ x-spark-common: &spark-common
     SPARK_WORKER_DIR: /opt/spark/work-dir
   volumes:
     - ./jobs:/opt/jobs:ro
+  networks: [datanet]
+
+# Configuração comum aos containers do Airflow
+x-airflow-common: &airflow-common
+  build:
+    context: ./docker
+    dockerfile: airflow/Dockerfile
+  image: case-saude/airflow:3.3.2
+  profiles: ["orchestration"]
+  restart: unless-stopped
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW__API_AUTH__JWT_ISSUER: case-saude
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Conexão com o cluster Spark (client mode: driver no Airflow)
+    AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077, "extra": {"deploy-mode": "client"}}'
+  volumes:
+    - ./dags:/opt/airflow/dags:ro
+    - ./jobs:/opt/jobs:ro
+    - airflow_logs:/opt/airflow/logs
   networks: [datanet]
 
 x-logging: &default-logging
@@ -230,7 +258,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512m
+          memory: 768m
     logging: *default-logging
     networks: [datanet]
 
@@ -284,6 +312,93 @@ services:
           memory: 2560m
     logging: *default-logging
 
+  # =========================================================
+  # ORQUESTRAÇÃO (profile: orchestration)
+  # =========================================================
+
+  # Migra o banco de metadados, cria o usuário admin e encerra
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    command: ["version"]
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+
+  # Interface web + API REST + Execution API (usada pelas tasks)
+  airflow-apiserver:
+    <<: *airflow-common
+    command: ["api-server"]
+    ports:
+      - "${AIRFLOW_PORT}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+    logging: *default-logging
+
+  # Scheduler com LocalExecutor: as tasks (e o driver Spark) rodam aqui
+  airflow-scheduler:
+    <<: *airflow-common
+    hostname: airflow-scheduler
+    command: ["scheduler"]
+    environment:
+      <<: *airflow-env
+      # Credenciais usadas pelo driver Spark para acessar o Silo e o DW
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: us-east-1
+      DW_DB_PASSWORD: ${DW_DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+    logging: *default-logging
+
+  # Lê e interpreta os arquivos de DAG
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["dag-processor"]
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *default-logging
+
 networks:
   datanet:
     name: case-saude-net
@@ -292,3 +407,4 @@ volumes:
   pg_data:
   silo_data:
   kafka_data:
+  airflow_logs:

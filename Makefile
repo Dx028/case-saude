@@ -3,7 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help setup check env validate up down restart ps logs psql topics spark-smoke scale-workers urls clean smoke
+.PHONY: help setup check env validate up down restart ps logs psql topics spark-smoke scale-workers airflow urls clean smoke
 
 help: ## Lista os comandos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -46,8 +46,12 @@ spark-smoke: ## Testa as conexões do Spark (Silo/Delta, Kafka e Postgres)
 scale-workers: ## Ajusta o número de workers Spark (uso: make scale-workers n=3)
 	$(COMPOSE) up -d --no-recreate --scale spark-worker=$(or $(n),2) spark-worker
 
+airflow: ## Executa um comando do Airflow (uso: make airflow cmd="dags list")
+	$(COMPOSE) exec airflow-scheduler airflow $(cmd)
+
 urls: ## Mostra os endereços das interfaces web
 	@echo "  Console do Silo (lakehouse):  http://localhost:$$(grep ^MINIO_CONSOLE_PORT= .env | cut -d= -f2)"
+	@echo "  Airflow:                      http://localhost:$$(grep ^AIRFLOW_PORT= .env | cut -d= -f2)"
 	@echo "  Spark Master UI:              http://localhost:$$(grep ^SPARK_MASTER_UI_PORT= .env | cut -d= -f2)"
 	@echo "  Kafka UI:                     http://localhost:$$(grep ^KAFKA_UI_PORT= .env | cut -d= -f2)"
 	@echo "  Kafka Connect (API REST):      http://localhost:$$(grep ^KAFKA_CONNECT_PORT= .env | cut -d= -f2)"
