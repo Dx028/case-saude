@@ -92,6 +92,132 @@ services:
     logging: *default-logging
     networks: [datanet]
 
+  # =========================================================
+  # MENSAGERIA (profile: stream)
+  # =========================================================
+
+  # Kafka em modo KRaft (sem Zookeeper), broker + controller no mesmo nó
+  kafka:
+    image: apache/kafka:4.2.1
+    profiles: ["stream"]
+    restart: unless-stopped
+    hostname: kafka
+    environment:
+      CLUSTER_ID: Q2FzZVNhdWRlS2Fma2EwMQ
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # PLAINTEXT: tráfego interno entre containers | EXTERNAL: acesso a partir do host
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Nó único: fator de replicação 1 (em produção: 3 brokers, RF=3, min.insync=2)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      # Tópicos são criados explicitamente (governança), não por acidente
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
+    ports:
+      - "${KAFKA_EXTERNAL_PORT}:9094"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+    logging: *default-logging
+    networks: [datanet]
+
+  # Cria os tópicos do projeto e encerra
+  kafka-init:
+    image: apache/kafka:4.2.1
+    profiles: ["stream"]
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/scripts/init-topics.sh"]
+    volumes:
+      - ./scripts/init-topics.sh:/scripts/init-topics.sh:ro
+    logging: *default-logging
+    networks: [datanet]
+
+  # Kafka Connect com os conectores do Debezium (CDC do PostgreSQL)
+  kafka-connect:
+    image: quay.io/debezium/connect:3.5.2.Final
+    profiles: ["stream"]
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: connect-cluster
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      HEAP_OPTS: "-Xms512m -Xmx1g"
+    ports:
+      - "${KAFKA_CONNECT_PORT}:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8083/connectors > /dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+    logging: *default-logging
+    networks: [datanet]
+
+  # Interface web do Kafka (tópicos, mensagens, consumer lag, conectores)
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.3.0
+    profiles: ["stream"]
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: case-saude
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+      DYNAMIC_CONFIG_ENABLED: "false"
+      # Tela de login (a UI permite ler mensagens com dados sensíveis)
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: admin
+      SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD}
+    ports:
+      - "${KAFKA_UI_PORT}:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    logging: *default-logging
+    networks: [datanet]
+
 networks:
   datanet:
     name: case-saude-net
@@ -99,3 +225,4 @@ networks:
 volumes:
   pg_data:
   silo_data:
+  kafka_data:
