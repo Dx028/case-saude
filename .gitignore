@@ -1,0 +1,35 @@
+# Segredos
+.env
+*.pem
+*.key
+*.crt
+certs/
+
+# Dados (nunca versionar dados reais ou gerados)
+data/raw/*
+!data/raw/.gitkeep
+*.csv
+*.parquet
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Airflow
+logs/
+airflow.db
+
+# Spark / Delta
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Editores e SO
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

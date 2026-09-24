@@ -1,0 +1,7 @@
+# Garante quebra de linha LF (evita erro de CRLF em scripts dentro dos containers)
+* text=auto eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+*.png binary
+*.jpg binary
+*.zip binary
