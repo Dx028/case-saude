@@ -1,0 +1,101 @@
+# =============================================================
+# Case Saúde — stack de dados
+# Serviços são agrupados em profiles (ver COMPOSE_PROFILES no .env)
+# =============================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ---------------------------------------------------------
+  # PostgreSQL — metadados (Airflow, Metabase), DW e OLTP de origem
+  # ---------------------------------------------------------
+  postgres:
+    image: postgres:17
+    profiles: ["core"]
+    restart: unless-stopped
+    # wal_level=logical já habilita o CDC com Debezium (fase 3)
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      DW_DB_PASSWORD: ${DW_DB_PASSWORD}
+      OLTP_DB_PASSWORD: ${OLTP_DB_PASSWORD}
+      METABASE_DB_PASSWORD: ${METABASE_DB_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *default-logging
+    networks: [datanet]
+
+  # ---------------------------------------------------------
+  # Silo (fork comunitário do MinIO) — object storage S3 do lakehouse
+  # ---------------------------------------------------------
+  silo:
+    image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
+    profiles: ["core"]
+    restart: unless-stopped
+    command: ["minio", "server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # Métricas liberadas para o Prometheus (fase 7)
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - silo_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *default-logging
+    networks: [datanet]
+
+  # Cria os buckets do lakehouse e encerra
+  silo-init:
+    image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
+    profiles: ["core"]
+    restart: "no"
+    depends_on:
+      silo:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/scripts/init-buckets.sh"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./scripts/init-buckets.sh:/scripts/init-buckets.sh:ro
+    logging: *default-logging
+    networks: [datanet]
+
+networks:
+  datanet:
+    name: case-saude-net
+
+volumes:
+  pg_data:
+  silo_data:
