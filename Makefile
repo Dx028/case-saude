@@ -3,7 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help setup check env certs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
+.PHONY: help setup check env certs smoke smoke-rapido security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
 
 help: ## Lista os comandos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -75,12 +75,15 @@ urls: ## Mostra os endereços das interfaces web
 	@echo "  Airflow:                      http://localhost:$$(grep ^AIRFLOW_PORT= .env | cut -d= -f2)"
 	@echo "  Spark Master UI:              http://localhost:$$(grep ^SPARK_MASTER_UI_PORT= .env | cut -d= -f2)"
 	@echo "  Kafka UI:                     http://localhost:$$(grep ^KAFKA_UI_PORT= .env | cut -d= -f2)"
-	@echo "  Kafka Connect (API REST):      http://localhost:$$(grep ^KAFKA_CONNECT_PORT= .env | cut -d= -f2)"
-	@echo "  Kafka (bootstrap no host):     localhost:$$(grep ^KAFKA_EXTERNAL_PORT= .env | cut -d= -f2)"
-	@echo "  PostgreSQL:                    localhost:$$(grep ^POSTGRES_PORT= .env | cut -d= -f2)"
+	@echo "  Kafka Connect (API REST):     http://localhost:$$(grep ^KAFKA_CONNECT_PORT= .env | cut -d= -f2)"
+	@echo "  Kafka (bootstrap no host):    localhost:$$(grep ^KAFKA_EXTERNAL_PORT= .env | cut -d= -f2)"
+	@echo "  PostgreSQL:                   localhost:$$(grep ^POSTGRES_PORT= .env | cut -d= -f2)"
 
 clean: ## Remove containers E volumes (apaga os dados!)
 	@read -p "Isso apaga TODOS os dados do projeto. Confirmar? [s/N] " r; [[ $$r == s ]] && $(COMPOSE) down -v --remove-orphans || echo "Cancelado."
 
-smoke: ## Testa as conexões de ponta a ponta
-	@echo "Smoke tests serão implementados na fase 9."
+smoke: ## Verifica a plataforma inteira, com fluxo de ponta a ponta (~3 min)
+	@./scripts/smoke.sh
+
+smoke-rapido: ## Verifica containers, conexões e segurança (sem o fluxo completo)
+	@RAPIDO=1 ./scripts/smoke.sh
