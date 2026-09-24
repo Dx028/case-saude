@@ -3,7 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help setup check env validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup urls clean smoke
+.PHONY: help setup check env validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
 
 help: ## Lista os comandos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -52,8 +52,16 @@ airflow: ## Executa um comando do Airflow (uso: make airflow cmd="dags list")
 db-setup: ## Reaplica schemas, papéis e tabelas de referência do DW
 	$(COMPOSE) run --rm db-setup
 
+targets: ## Estado de cada alvo coletado pelo Prometheus
+	@curl -s http://localhost:$$(grep ^PROMETHEUS_PORT= .env | cut -d= -f2)/api/v1/targets | jq -r '.data.activeTargets[] | [.labels.job, .labels.instance, .health] | @tsv' | sort | column -t
+
+alerts: ## Alertas ativos no Prometheus
+	@curl -s http://localhost:$$(grep ^PROMETHEUS_PORT= .env | cut -d= -f2)/api/v1/alerts | jq -r '.data.alerts[] | [.state, .labels.alertname, (.labels.job // .labels.name // "")] | @tsv' | column -t
+
 urls: ## Mostra os endereços das interfaces web
 	@echo "  Console do Silo (lakehouse):  http://localhost:$$(grep ^MINIO_CONSOLE_PORT= .env | cut -d= -f2)"
+	@echo "  Grafana:                      http://localhost:$$(grep ^GRAFANA_PORT= .env | cut -d= -f2)"
+	@echo "  Prometheus:                   http://localhost:$$(grep ^PROMETHEUS_PORT= .env | cut -d= -f2)"
 	@echo "  Metabase:                     http://localhost:$$(grep ^METABASE_PORT= .env | cut -d= -f2)"
 	@echo "  Airflow:                      http://localhost:$$(grep ^AIRFLOW_PORT= .env | cut -d= -f2)"
 	@echo "  Spark Master UI:              http://localhost:$$(grep ^SPARK_MASTER_UI_PORT= .env | cut -d= -f2)"

@@ -1,0 +1,64 @@
+# Regras de alerta: detectam falhas e gargalos entre os componentes
+groups:
+  - name: disponibilidade
+    rules:
+      - alert: ServicoIndisponivel
+        expr: up == 0
+        for: 2m
+        labels: { severidade: critica }
+        annotations:
+          resumo: "Serviço {{ $labels.job }} indisponível"
+          descricao: "O alvo {{ $labels.instance }} não responde há mais de 2 minutos."
+
+      - alert: SparkSemWorkers
+        expr: metrics_master_aliveWorkers_Value < 1
+        for: 1m
+        labels: { severidade: critica }
+        annotations:
+          resumo: "Cluster Spark sem workers ativos"
+          descricao: "Nenhum worker registrado no master: jobs não serão executados."
+
+      - alert: KafkaSemBroker
+        expr: kafka_brokers < 1
+        for: 1m
+        labels: { severidade: critica }
+        annotations:
+          resumo: "Kafka sem brokers disponíveis"
+          descricao: "O exporter não encontra brokers ativos no cluster."
+
+  - name: desempenho
+    rules:
+      - alert: KafkaConsumerLagAlto
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 1000
+        for: 5m
+        labels: { severidade: alta }
+        annotations:
+          resumo: "Consumer lag alto em {{ $labels.topic }}"
+          descricao: "O grupo {{ $labels.consumergroup }} está {{ $value }} mensagens atrás: possível gargalo no processamento em tempo real."
+
+      - alert: ContainerMemoriaAlta
+        expr: |
+          (container_memory_working_set_bytes{name!=""} / container_spec_memory_limit_bytes{name!=""} > 0.9)
+          and container_spec_memory_limit_bytes{name!=""} > 0
+        for: 5m
+        labels: { severidade: alta }
+        annotations:
+          resumo: "Container {{ $labels.name }} perto do limite de memória"
+          descricao: "Uso acima de 90% do limite: risco de encerramento por falta de memória (OOM)."
+
+      - alert: PostgresConexoesAltas
+        expr: sum(pg_stat_database_numbackends) > 80
+        for: 5m
+        labels: { severidade: media }
+        annotations:
+          resumo: "PostgreSQL com muitas conexões abertas"
+          descricao: "{{ $value }} conexões ativas (limite padrão: 100)."
+
+  - name: pipelines
+    rules:
+      - alert: AirflowTarefaFalhou
+        expr: sum by (dag_id, task_id) (increase({__name__=~"airflow_ti_finish(_total)?", state="failed"}[15m])) > 0
+        labels: { severidade: alta }
+        annotations:
+          resumo: "Falha na tarefa {{ $labels.task_id }} da DAG {{ $labels.dag_id }}"
+          descricao: "Ao menos uma execução falhou nos últimos 15 minutos."

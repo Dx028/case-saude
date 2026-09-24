@@ -1,0 +1,18 @@
+# Converte as métricas StatsD do Airflow em métricas Prometheus com labels
+mappings:
+  - match: "airflow.ti.finish.*.*.*"
+    name: "airflow_ti_finish"
+    labels: { dag_id: "$1", task_id: "$2", state: "$3" }
+  - match: "airflow.dagrun.duration.*.*"
+    name: "airflow_dagrun_duration"
+    labels: { status: "$1", dag_id: "$2" }
+  - match: "airflow.dag_processing.last_duration.*"
+    name: "airflow_dag_processing_last_duration"
+    labels: { dag_file: "$1" }
+  - match: "airflow.pool.open_slots.*"
+    name: "airflow_pool_open_slots"
+    labels: { pool: "$1" }
+  - match: "airflow.executor.*"
+    name: "airflow_executor_$1"
+  - match: "airflow.scheduler_heartbeat"
+    name: "airflow_scheduler_heartbeat"
