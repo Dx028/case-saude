@@ -3,6 +3,22 @@
 # Serviços são agrupados em profiles (ver COMPOSE_PROFILES no .env)
 # =============================================================
 
+# Configuração comum aos containers do Spark
+x-spark-common: &spark-common
+  build:
+    context: ./docker/spark
+  image: case-saude/spark:4.1.2
+  profiles: ["processing"]
+  restart: unless-stopped
+  environment: &spark-env
+    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    AWS_REGION: us-east-1
+    SPARK_WORKER_DIR: /opt/spark/work-dir
+  volumes:
+    - ./jobs:/opt/jobs:ro
+  networks: [datanet]
+
 x-logging: &default-logging
   driver: json-file
   options:
@@ -217,6 +233,56 @@ services:
           memory: 512m
     logging: *default-logging
     networks: [datanet]
+
+  # =========================================================
+  # PROCESSAMENTO (profile: processing)
+  # =========================================================
+
+  spark-master:
+    <<: *spark-common
+    hostname: spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master",
+              "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
+    environment:
+      <<: *spark-env
+      # O driver dos jobs de teste roda aqui (client mode) e acessa o DW
+      DW_DB_PASSWORD: ${DW_DB_PASSWORD}
+    ports:
+      - "${SPARK_MASTER_UI_PORT}:8080"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *default-logging
+
+  # Workers escalam horizontalmente: make scale-workers n=3
+  spark-worker:
+    <<: *spark-common
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "spark://spark-master:7077",
+              "--cores", "${SPARK_WORKER_CORES}", "--memory", "${SPARK_WORKER_MEMORY}",
+              "--webui-port", "8081"]
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      replicas: ${SPARK_WORKER_REPLICAS}
+      resources:
+        limits:
+          memory: 2560m
+    logging: *default-logging
 
 networks:
   datanet:
