@@ -2,17 +2,20 @@
 # Cria o .env a partir do .env.example, gerando segredos aleatórios:
 #   __GENERATE__ -> senha hexadecimal
 #   __FERNET__   -> chave Fernet (criptografia de conexões do Airflow)
+#   __KMS__      -> chave mestra do KMS do Silo (criptografia em repouso)
 # Se o .env já existir, apenas ACRESCENTA as variáveis novas, sem alterar as existentes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 gen()    { openssl rand -hex 16; }
 fernet() { openssl rand -base64 32 | tr '+/' '-_'; }
+kms()    { echo "case-saude-kms:$(openssl rand -base64 32)"; }
 
 resolve() {
   case "$1" in
     __GENERATE__) gen ;;
     __FERNET__)   fernet ;;
+    __KMS__)      kms ;;
     *)            printf '%s' "$1" ;;
   esac
 }

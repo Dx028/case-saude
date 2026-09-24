@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AnalistaApenasLeGold",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:GetObject"],
+      "Resource": ["arn:aws:s3:::gold", "arn:aws:s3:::gold/*"]
+    }
+  ]
+}

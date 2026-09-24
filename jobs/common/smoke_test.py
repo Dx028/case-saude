@@ -54,14 +54,14 @@ def teste_kafka():
 def teste_postgres():
     df = (
         spark.read.format("jdbc")
-        .option("url", "jdbc:postgresql://postgres:5432/dw")
+        .option("url", "jdbc:postgresql://postgres:5432/dw?sslmode=require")
         .option("user", "dw_owner")
         .option("password", os.environ["DW_DB_PASSWORD"])
-        .option("query", "SELECT current_database() AS banco, current_user AS usuario")
+        .option("query", "SELECT current_database() AS banco, current_user AS usuario, (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()) AS tls")
         .load()
     )
     linha = df.first()
-    return f"conectado ao banco '{linha.banco}' como '{linha.usuario}'"
+    return f"conectado ao banco '{linha.banco}' como '{linha.usuario}' (TLS: {'sim' if linha.tls else 'não'})"
 
 
 checar("Delta Lake no Silo (S3A)", teste_delta)

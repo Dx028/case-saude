@@ -3,12 +3,12 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help setup check env validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
+.PHONY: help setup check env certs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
 
 help: ## Lista os comandos disponíveis
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
-setup: check env ## Verifica pré-requisitos e cria/atualiza o .env
+setup: check env certs ## Verifica pré-requisitos, cria o .env e os certificados TLS
 
 check: ## Verifica pré-requisitos da máquina
 	@./scripts/check-prereqs.sh
@@ -16,10 +16,13 @@ check: ## Verifica pré-requisitos da máquina
 env: ## Cria o .env ou acrescenta variáveis novas
 	@./scripts/gen-env.sh
 
+certs: ## Gera a CA local e os certificados TLS (idempotente)
+	@./scripts/gen-certs.sh
+
 validate: ## Valida a sintaxe do docker-compose.yml
 	@$(COMPOSE) config -q && echo "docker-compose.yml válido."
 
-up: ## Sobe os serviços dos profiles definidos em COMPOSE_PROFILES
+up: certs ## Sobe os serviços dos profiles definidos em COMPOSE_PROFILES
 	$(COMPOSE) up -d --build
 
 down: ## Para os serviços (mantém os dados)
@@ -57,6 +60,12 @@ targets: ## Estado de cada alvo coletado pelo Prometheus
 
 alerts: ## Alertas ativos no Prometheus
 	@curl -s http://localhost:$$(grep ^PROMETHEUS_PORT= .env | cut -d= -f2)/api/v1/alerts | jq -r '.data.alerts[] | [.state, .labels.alertname, (.labels.job // .labels.name // "")] | @tsv' | column -t
+
+security-check: ## Verifica TLS, criptografia, permissões e mascaramento
+	@./scripts/security-check.sh
+
+mascaramento-demo: ## Demonstra as técnicas de mascaramento com o Spark
+	$(COMPOSE) exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 /opt/jobs/common/demo_mascaramento.py
 
 urls: ## Mostra os endereços das interfaces web
 	@echo "  Console do Silo (lakehouse):  http://localhost:$$(grep ^MINIO_CONSOLE_PORT= .env | cut -d= -f2)"

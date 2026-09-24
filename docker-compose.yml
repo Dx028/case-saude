@@ -12,8 +12,9 @@ x-spark-common: &spark-common
   profiles: ["processing"]
   restart: unless-stopped
   environment: &spark-env
-    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    # Usuário de serviço do pipeline (política por camada), não o root do Silo
+    AWS_ACCESS_KEY_ID: svc-pipeline
+    AWS_SECRET_ACCESS_KEY: ${SILO_PIPELINE_SECRET}
     AWS_REGION: us-east-1
     SPARK_WORKER_DIR: /opt/spark/work-dir
   volumes:
@@ -31,7 +32,7 @@ x-airflow-common: &airflow-common
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow?sslmode=require
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -67,8 +68,37 @@ services:
     image: postgres:17
     profiles: ["core"]
     restart: unless-stopped
-    # wal_level=logical já habilita o CDC com Debezium (fase 3)
-    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
+    # Instala o certificado com as permissões exigidas e chama o entrypoint oficial
+    entrypoint: ["/bin/bash", "/scripts/postgres-entrypoint.sh"]
+    command:
+      - postgres
+      # CDC com Debezium
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+      # Criptografia em trânsito (TLS 1.2+) e regras de acesso (sem TLS = recusado)
+      - -c
+      - ssl=on
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - ssl_cert_file=/etc/postgresql/tls/postgres.crt
+      - -c
+      - ssl_key_file=/etc/postgresql/tls/postgres.key
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - password_encryption=scram-sha-256
+      # Auditoria: conexões e mudanças de estrutura vão para o log (e para o Loki)
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - log_statement=ddl
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -82,6 +112,9 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./sql/init:/docker-entrypoint-initdb.d:ro
+      - ./certs:/certs-src:ro
+      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./scripts/postgres-entrypoint.sh:/scripts/postgres-entrypoint.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
       interval: 10s
@@ -107,6 +140,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       # Métricas liberadas para o Prometheus (fase 7)
       MINIO_PROMETHEUS_AUTH_TYPE: public
+      # Chave mestra do KMS: criptografia em repouso (SSE-S3) dos objetos
+      MINIO_KMS_SECRET_KEY: ${SILO_KMS_KEY}
     ports:
       - "${MINIO_API_PORT}:9000"
       - "${MINIO_CONSOLE_PORT}:9001"
@@ -138,6 +173,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       BI_READER_PASSWORD: ${BI_READER_PASSWORD}
       MONITORING_DB_PASSWORD: ${MONITORING_DB_PASSWORD}
+      PGSSLMODE: require
     volumes:
       - ./scripts/db-setup.sh:/scripts/db-setup.sh:ro
       - ./sql/cluster:/sql/cluster:ro
@@ -157,8 +193,12 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      SILO_PIPELINE_SECRET: ${SILO_PIPELINE_SECRET}
+      SILO_INGESTAO_SECRET: ${SILO_INGESTAO_SECRET}
+      SILO_ANALISTA_SECRET: ${SILO_ANALISTA_SECRET}
     volumes:
       - ./scripts/init-buckets.sh:/scripts/init-buckets.sh:ro
+      - ./config/silo/politicas:/politicas:ro
     logging: *default-logging
     networks: [datanet]
 
@@ -277,6 +317,14 @@ services:
       DYNAMIC_CONFIG_ENABLED: "false"
       # Tela de login (a UI permite ler mensagens com dados sensíveis)
       AUTH_TYPE: LOGIN_FORM
+      # Mascara campos pessoais ao exibir mensagens dos tópicos de saúde
+      KAFKA_CLUSTERS_0_MASKING_0_TYPE: MASK
+      KAFKA_CLUSTERS_0_MASKING_0_FIELDS_0: cpf
+      KAFKA_CLUSTERS_0_MASKING_0_FIELDS_1: nome
+      KAFKA_CLUSTERS_0_MASKING_0_FIELDS_2: telefone
+      KAFKA_CLUSTERS_0_MASKING_0_FIELDS_3: email
+      KAFKA_CLUSTERS_0_MASKING_0_FIELDS_4: endereco
+      KAFKA_CLUSTERS_0_MASKING_0_TOPICVALUESPATTERN: "saude\\..*"
       SPRING_SECURITY_USER_NAME: admin
       SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD}
     ports:
@@ -301,6 +349,8 @@ services:
       <<: *spark-env
       # O driver dos jobs de teste roda aqui (client mode) e acessa o DW
       DW_DB_PASSWORD: ${DW_DB_PASSWORD}
+      # Chave da pseudonimização (HMAC): só o driver precisa dela
+      PII_HMAC_KEY: ${PII_HMAC_KEY}
     ports:
       - "${SPARK_MASTER_UI_PORT}:8080"
     healthcheck:
@@ -387,10 +437,11 @@ services:
     environment:
       <<: *airflow-env
       # Credenciais usadas pelo driver Spark para acessar o Silo e o DW
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: svc-pipeline
+      AWS_SECRET_ACCESS_KEY: ${SILO_PIPELINE_SECRET}
       AWS_REGION: us-east-1
       DW_DB_PASSWORD: ${DW_DB_PASSWORD}
+      PII_HMAC_KEY: ${PII_HMAC_KEY}
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
       interval: 30s
@@ -454,12 +505,7 @@ services:
         condition: service_healthy
     environment:
       # Banco de metadados do próprio Metabase
-      MB_DB_TYPE: postgres
-      MB_DB_HOST: postgres
-      MB_DB_PORT: 5432
-      MB_DB_DBNAME: metabase
-      MB_DB_USER: metabase
-      MB_DB_PASS: ${METABASE_DB_PASSWORD}
+      MB_DB_CONNECTION_URI: postgres://postgres:5432/metabase?user=metabase&password=${METABASE_DB_PASSWORD}&sslmode=require
       # Criptografa as credenciais das fontes de dados salvas pelo Metabase
       MB_ENCRYPTION_SECRET_KEY: ${METABASE_ENCRYPTION_KEY}
       # Privacidade: sem telemetria para terceiros
@@ -630,7 +676,7 @@ services:
     profiles: ["observability"]
     restart: unless-stopped
     environment:
-      DATA_SOURCE_URI: postgres:5432/postgres?sslmode=disable
+      DATA_SOURCE_URI: postgres:5432/postgres?sslmode=require
       DATA_SOURCE_USER: monitoring
       DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD}
     depends_on:
