@@ -119,6 +119,25 @@ services:
     logging: *default-logging
     networks: [datanet]
 
+  # Aplica schemas, papéis e tabelas de referência do DW (idempotente) e encerra
+  db-setup:
+    image: postgres:17
+    profiles: ["core"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/scripts/db-setup.sh"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      BI_READER_PASSWORD: ${BI_READER_PASSWORD}
+    volumes:
+      - ./scripts/db-setup.sh:/scripts/db-setup.sh:ro
+      - ./sql/dw:/sql/dw:ro
+    logging: *default-logging
+    networks: [datanet]
+
   # Cria os buckets do lakehouse e encerra
   silo-init:
     image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
@@ -398,6 +417,48 @@ services:
         limits:
           memory: 1g
     logging: *default-logging
+
+  # =========================================================
+  # BI (profile: bi)
+  # =========================================================
+
+  # Metabase (versão LTS) — dashboards sobre a camada gold do DW
+  metabase:
+    image: metabase/metabase:v0.58.31.x
+    profiles: ["bi"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Banco de metadados do próprio Metabase
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: postgres
+      MB_DB_PORT: 5432
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: metabase
+      MB_DB_PASS: ${METABASE_DB_PASSWORD}
+      # Criptografa as credenciais das fontes de dados salvas pelo Metabase
+      MB_ENCRYPTION_SECRET_KEY: ${METABASE_ENCRYPTION_KEY}
+      # Privacidade: sem telemetria para terceiros
+      MB_ANON_TRACKING_ENABLED: "false"
+      MB_CHECK_FOR_UPDATES: "false"
+      JAVA_TIMEZONE: America/Sao_Paulo
+      JAVA_OPTS: "-Xmx1g"
+    ports:
+      - "${METABASE_PORT}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:3000/api/health | grep -q ok"]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+    logging: *default-logging
+    networks: [datanet]
 
 networks:
   datanet:
