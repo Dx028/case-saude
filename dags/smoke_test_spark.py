@@ -16,6 +16,7 @@ from airflow.sdk import dag
     schedule=None,
     start_date=datetime(2026, 1, 1),
     catchup=False,
+    max_active_runs=1,  # nunca duas execuções simultâneas (gravam na mesma camada do lakehouse)
     tags=["infra", "smoke-test"],
 )
 def smoke_test_spark():

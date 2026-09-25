@@ -150,6 +150,10 @@ O intervalo de 30 segundos foi definido por medição: com lotes de 10 segundos,
 
 As gravações nas tabelas Delta são idempotentes por micro-batch: um reprocessamento após falha não gera duplicatas. No Metabase, as views `vw_alertas_clinicos` (com a latência de cada alerta) e `vw_ocupacao_por_uf` ficam disponíveis após sincronizar o esquema do banco.
 
+### Limitações conhecidas
+
+- **Gravações concorrentes no Delta Lake sobre S3:** o object storage não oferece a operação atômica "gravar somente se não existir" de que o log de transações do Delta precisa. Por isso, duas aplicações Spark gravando **na mesma tabela** ao mesmo tempo podem falhar. No projeto, cada tabela tem um único gravador (a speed layer ou o job em lote correspondente), as DAGs usam `max_active_runs=1` e o smoke test grava em uma tabela exclusiva por execução. Em produção, a solução é um LogStore com coordenação externa (por exemplo, o baseado em DynamoDB na AWS) ou um formato com catálogo transacional, como o Apache Iceberg.
+
 ### Solução de problemas
 
 | Sintoma | Causa provável e solução |

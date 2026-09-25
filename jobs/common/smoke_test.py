@@ -24,18 +24,30 @@ def checar(nome, fn):
         detalhe = fn()
         resultados[nome] = ("OK", detalhe)
     except Exception as exc:  # noqa: BLE001 - queremos reportar qualquer falha
-        resultados[nome] = ("ERRO", " | ".join([l.strip() for l in str(exc).splitlines() if "Exception" in l or "Caused by" in l][:4])[:600] or str(exc)[:300])
+        linhas = [l.strip() for l in str(exc).splitlines() if "Exception" in l or "Caused by" in l]
+        resultados[nome] = ("ERRO", (" | ".join(linhas[:4]) or str(exc))[:600])
 
 
 # 1. Lakehouse: Delta Lake no Silo --------------------------------------
 def teste_delta():
-    caminho = "s3a://bronze/_smoke/teste_delta"
+    # Cada execução usa uma tabela própria: no S3, o Delta Lake não coordena gravações
+    # concorrentes de aplicações diferentes na mesma tabela (ver README, limitações)
+    caminho = f"s3a://bronze/_smoke/{spark.sparkContext.applicationId}"
     df = spark.range(1000).withColumn("gerado_em", F.lit(datetime.now().isoformat()))
     df.write.format("delta").mode("overwrite").save(caminho)
+    df.write.format("delta").mode("append").save(caminho)
     total = spark.read.format("delta").load(caminho).count()
     versoes = spark.sql(f"DESCRIBE HISTORY delta.`{caminho}`").count()
-    assert total == 1000, f"esperava 1000 linhas, li {total}"
-    return f"{total} linhas gravadas/lidas em {caminho} ({versoes} versão(ões) no histórico)"
+    v0 = spark.read.format("delta").option("versionAsOf", 0).load(caminho).count()  # time travel
+    _remover(caminho)
+    assert (total, v0) == (2000, 1000), f"esperava 2000 linhas (1000 na versão 0), li {total} ({v0})"
+    return f"{total} linhas em {versoes} versões; time travel para a versão 0: {v0} linhas (tabela de teste removida)"
+
+
+def _remover(caminho):
+    jvm = spark._jvm
+    path = jvm.org.apache.hadoop.fs.Path(caminho)
+    path.getFileSystem(spark._jsc.hadoopConfiguration()).delete(path, True)
 
 
 # 2. Kafka ----------------------------------------------------------------
