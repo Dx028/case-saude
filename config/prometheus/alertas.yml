@@ -62,3 +62,33 @@ groups:
         annotations:
           resumo: "Falha na tarefa {{ $labels.task_id }} da DAG {{ $labels.dag_id }}"
           descricao: "Ao menos uma execução falhou nos últimos 15 minutos."
+
+  - name: speed_layer
+    rules:
+      - alert: SpeedLayerAtrasada
+        expr: max(spark_streaming_offsets_behind_latest_max) > 20000
+        for: 5m
+        labels: { severidade: alta }
+        annotations:
+          resumo: "Speed layer atrasada em relação ao Kafka"
+          descricao: "{{ $value }} mensagens aguardando processamento: a vazão de entrada supera a capacidade do cluster."
+
+      - alert: SpeedLayerSemProgresso
+        expr: |
+          changes(spark_streaming_batch_id[5m]) == 0
+          and on() sum(rate(gerador_eventos_produzidos_total[5m])) > 0
+        for: 2m
+        labels: { severidade: critica }
+        annotations:
+          resumo: "Speed layer parada"
+          descricao: "Há eventos chegando ao Kafka, mas nenhum micro-batch foi concluído nos últimos 5 minutos."
+
+      - alert: TaxaDeEventosInvalidosAlta
+        expr: |
+          sum(rate({__name__=~"speed_layer_eventos_invalidos(_total)?"}[10m]))
+          / (sum(rate({__name__=~"speed_layer_eventos_validos(_total)?"}[10m])) + sum(rate({__name__=~"speed_layer_eventos_invalidos(_total)?"}[10m]))) > 0.05
+        for: 5m
+        labels: { severidade: media }
+        annotations:
+          resumo: "Mais de 5% dos eventos indo para a DLQ"
+          descricao: "Possível mudança de formato na origem: verifique o tópico saude.eventos.dlq."

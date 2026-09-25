@@ -53,6 +53,13 @@ scrape_configs:
         type: A
         port: 8081
 
-  # --- Orquestração (Airflow via StatsD) ---
+  # --- Gerador de eventos (só existe quando ligado: descoberta via DNS) ---
+  - job_name: gerador
+    dns_sd_configs:
+      - names: ["gerador"]
+        type: A
+        port: 8000
+
+  # --- Orquestração (Airflow) e speed layer, ambos via StatsD ---
   - job_name: airflow
     static_configs: [{ targets: ["statsd-exporter:9102"] }]

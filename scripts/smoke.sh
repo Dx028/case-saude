@@ -35,6 +35,16 @@ http() { curl -fsS -m 5 "$@"; }
 # ---------------------------------------------------------------
 secao "1. Containers (profiles: ${COMPOSE_PROFILES})"
 UNICA_VEZ="db-setup silo-init kafka-init airflow-init"
+
+# Containers recém-criados passam pelo estado "starting" até o primeiro healthcheck:
+# aguarda até 3 minutos antes de avaliar (ex.: logo após um "make up")
+for i in $(seq 1 36); do
+  iniciando=$(docker compose ps --format json 2>/dev/null | jq -s 'flatten | map(select(.Health == "starting")) | length')
+  [[ "$iniciando" == "0" ]] && break
+  (( i == 1 )) && printf '  ...  %s container(s) iniciando, aguardando o primeiro healthcheck' "$iniciando"
+  printf '.'; sleep 5
+done
+(( i > 1 )) && echo
 estado=$(docker compose ps -a --format json 2>/dev/null | jq -s 'flatten')
 for svc in $(docker compose config --services 2>/dev/null | sort); do
   linhas=$(jq -r --arg s "$svc" '.[] | select(.Service == $s) | "\(.State)|\(.Health)|\(.ExitCode)"' <<<"$estado")
@@ -50,7 +60,15 @@ for svc in $(docker compose config --services 2>/dev/null | sort); do
   done <<<"$linhas"
   if [[ " $UNICA_VEZ " == *" $svc "* ]]; then desc="concluído com sucesso"; else desc="em execução"; fi
   (( total > 1 )) && desc="$desc (${bons}/${total} réplicas)"
-  if (( bons == total )); then ok "$svc: $desc"; else falha "$svc: $bons de $total saudáveis"; fi
+  if (( bons == total )); then
+    ok "$svc: $desc"
+  else
+    falha "$svc: $bons de $total saudáveis"
+    # mostra a última mensagem do healthcheck, para agilizar o diagnóstico
+    nome=$(jq -r --arg s "$svc" '[.[] | select(.Service == $s)][0].Name' <<<"$estado")
+    docker inspect --format '{{json .State.Health}}' "$nome" 2>/dev/null \
+      | jq -r '.Log[-1].Output // empty' 2>/dev/null | head -3 | sed 's/^/          /'
+  fi
 done
 
 # ---------------------------------------------------------------
@@ -68,6 +86,9 @@ if ativo stream; then
 fi
 if ativo processing; then
   checar "Spark: workers registrados no master" 6 bash -c "curl -fsS -m 5 http://localhost:${SPARK_MASTER_UI_PORT}/json/ | jq -e '.aliveworkers >= 1'"
+fi
+if ativo speed; then
+  checar "Speed layer: aplicação de streaming ativa" 12 bash -c "curl -fsS -m 5 http://localhost:${SPARK_STREAMING_UI_PORT}/api/v1/applications | jq -e 'length > 0'"
 fi
 if ativo orchestration; then
   checar "Airflow: banco de metadados e scheduler" 12 bash -c "curl -fsS -m 5 http://localhost:${AIRFLOW_PORT}/api/v2/monitor/health | jq -e '.metadatabase.status == \"healthy\" and .scheduler.status == \"healthy\"'"
@@ -105,6 +126,34 @@ if [[ "$RAPIDO" != "1" ]] && ativo orchestration && ativo processing; then
   else
     falha "não foi possível disparar a DAG smoke_test_spark"
   fi
+fi
+
+# ---------------------------------------------------------------
+if [[ "$RAPIDO" != "1" ]] && ativo speed && ativo stream; then
+  secao "3b. Speed layer: evento no Kafka -> Spark Streaming -> alerta no DW"
+  id="smoke-$(date +%s)"
+  agora=$(date -u +%Y-%m-%dT%H:%M:%S.000+00:00)
+  depois=$(date -u -d '+2 seconds' +%Y-%m-%dT%H:%M:%S.000+00:00)
+  comum='"cpf":"000.000.001-91","nome":"Paciente Teste","data_nascimento":"1950-01-01","sexo":"F","telefone":"(11) 90000-0000","email":"teste@exemplo.com","endereco":"Rua Teste, 1","cep":"01000-000","municipio":"São Paulo","codigo_ibge":"3550308","uf":"SP","hospital_cnes":"0000000","hospital_nome":"Hospital de Teste (smoke)","hospital_municipio":"São Paulo","hospital_uf":"SP","setor":"UTI","leito":"UTI-00","cid_principal":"J18","gravidade":5'
+  PRODUZ() { docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic "$1" >/dev/null 2>&1; }
+  printf '{"evento_id":"%s-a","tipo_evento":"ADMISSAO","ocorrido_em":"%s","internacao_id":"%s",%s}\n' "$id" "$agora" "$id" "$comum" | PRODUZ saude.eventos.admissoes
+  printf '{"evento_id":"%s-s","internacao_id":"%s","ocorrido_em":"%s","leito":"UTI-00","frequencia_cardiaca":95,"pressao_sistolica":118,"pressao_diastolica":75,"saturacao_o2":85.0,"temperatura":37.0,"frequencia_respiratoria":22}\n' "$id" "$id" "$agora" | PRODUZ saude.eventos.sinais-vitais
+  printf '{"evento_id":"%s-b","tipo_evento":"ALTA","ocorrido_em":"%s","internacao_id":"%s",%s}\n' "$id" "$depois" "$id" "$comum" | PRODUZ saude.eventos.admissoes
+  printf '  ...  eventos de teste publicados (internação %s), aguardando o alerta no DW' "$id"
+  SQL() { docker compose exec -T postgres psql -U "$POSTGRES_USER" -d dw -Atc "$1" 2>/dev/null; }
+  latencia=""
+  for _ in $(seq 1 24); do   # até 2 minutos
+    sleep 5; printf '.'
+    latencia=$(SQL "SELECT round(extract(epoch FROM processado_em - ocorrido_em)::numeric, 1) FROM gold.alerta_clinico_rt WHERE internacao_id = '$id' AND tipo_alerta = 'HIPOXEMIA' LIMIT 1")
+    [[ -n "$latencia" ]] && break
+  done
+  echo
+  if [[ -n "$latencia" ]]; then
+    ok "Alerta de hipoxemia (SpO2 85%) chegou ao DW em ${latencia}s: bronze, silver e serving atualizados"
+  else
+    falha "o alerta de teste não chegou ao DW em 2 minutos (veja: make speed-logs)"
+  fi
+  SQL "DELETE FROM gold.alerta_clinico_rt WHERE internacao_id LIKE 'smoke-%'" >/dev/null
 fi
 
 # ---------------------------------------------------------------

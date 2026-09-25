@@ -1,6 +1,9 @@
 # =============================================================
 # Case Saúde — stack de dados
 # Serviços são agrupados em profiles (ver COMPOSE_PROFILES no .env)
+# Configurações são montadas sempre como PASTAS: no Docker Desktop com WSL,
+# montagens de arquivo individual quebram quando o arquivo é substituído ou
+# quando o Docker reinicia (o container falha com código 127).
 # =============================================================
 
 # Configuração comum aos containers do Spark
@@ -19,6 +22,7 @@ x-spark-common: &spark-common
     SPARK_WORKER_DIR: /opt/spark/work-dir
   volumes:
     - ./jobs:/opt/jobs:ro
+    - ./tests:/opt/tests:ro
   networks: [datanet]
 
 # Configuração comum aos containers do Airflow
@@ -89,7 +93,7 @@ services:
       - -c
       - ssl_key_file=/etc/postgresql/tls/postgres.key
       - -c
-      - hba_file=/etc/postgresql/pg_hba.conf
+      - hba_file=/etc/postgresql/custom/pg_hba.conf
       - -c
       - password_encryption=scram-sha-256
       # Auditoria: conexões e mudanças de estrutura vão para o log (e para o Loki)
@@ -113,8 +117,8 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./sql/init:/docker-entrypoint-initdb.d:ro
       - ./certs:/certs-src:ro
-      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      - ./scripts/postgres-entrypoint.sh:/scripts/postgres-entrypoint.sh:ro
+      - ./config/postgres:/etc/postgresql/custom:ro
+      - ./scripts:/scripts:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
       interval: 10s
@@ -175,7 +179,7 @@ services:
       MONITORING_DB_PASSWORD: ${MONITORING_DB_PASSWORD}
       PGSSLMODE: require
     volumes:
-      - ./scripts/db-setup.sh:/scripts/db-setup.sh:ro
+      - ./scripts:/scripts:ro
       - ./sql/cluster:/sql/cluster:ro
       - ./sql/dw:/sql/dw:ro
     logging: *default-logging
@@ -197,7 +201,7 @@ services:
       SILO_INGESTAO_SECRET: ${SILO_INGESTAO_SECRET}
       SILO_ANALISTA_SECRET: ${SILO_ANALISTA_SECRET}
     volumes:
-      - ./scripts/init-buckets.sh:/scripts/init-buckets.sh:ro
+      - ./scripts:/scripts:ro
       - ./config/silo/politicas:/politicas:ro
     logging: *default-logging
     networks: [datanet]
@@ -260,7 +264,7 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/sh", "/scripts/init-topics.sh"]
     volumes:
-      - ./scripts/init-topics.sh:/scripts/init-topics.sh:ro
+      - ./scripts:/scripts:ro
     logging: *default-logging
     networks: [datanet]
 
@@ -464,7 +468,7 @@ services:
     restart: unless-stopped
     command: ["--statsd.mapping-config=/etc/statsd/mapping.yml"]
     volumes:
-      - ./config/statsd/mapping.yml:/etc/statsd/mapping.yml:ro
+      - ./config/statsd:/etc/statsd:ro
     deploy:
       resources:
         limits:
@@ -598,7 +602,7 @@ services:
     restart: unless-stopped
     command: ["-config.file=/etc/loki/loki.yml"]
     volumes:
-      - ./config/loki/loki.yml:/etc/loki/loki.yml:ro
+      - ./config/loki:/etc/loki:ro
       - loki_data:/loki
     deploy:
       resources:
@@ -618,7 +622,7 @@ services:
       - --storage.path=/var/lib/alloy/data
       - /etc/alloy/config.alloy
     volumes:
-      - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ./config/alloy:/etc/alloy:ro
       # Acesso somente leitura à API do Docker (ver considerações de segurança no README)
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - alloy_data:/var/lib/alloy/data
@@ -686,6 +690,99 @@ services:
       resources:
         limits:
           memory: 128m
+    logging: *default-logging
+    networks: [datanet]
+
+  # =========================================================
+  # SPEED LAYER (profile: speed)
+  # =========================================================
+
+  # Structured Streaming permanente: Kafka -> bronze -> silver -> serving no DW
+  spark-streaming:
+    <<: *spark-common
+    profiles: ["speed"]
+    hostname: spark-streaming
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - spark://spark-master:7077
+      - --name
+      - speed-layer-eventos-saude
+      - --driver-memory
+      - 1g
+      # Núcleos reservados à speed layer (padrão: 2 de 4), o restante fica para os jobs em lote.
+      # Para escalar: aumente SPARK_WORKER_REPLICAS e SPARK_STREAMING_CORES (até 9 = total de partições dos tópicos)
+      - --conf
+      - spark.cores.max=${SPARK_STREAMING_CORES}
+      - --conf
+      - spark.executor.cores=1
+      - --conf
+      - spark.executor.memory=1g
+      - --conf
+      - spark.sql.shuffle.partitions=4
+      # O Delta reconstrói o estado de cada tabela com 50 partições por padrão (pensado para
+      # clusters grandes); com 2 núcleos, isso vira dezenas de tarefas minúsculas a cada gravação
+      - --conf
+      - spark.databricks.delta.snapshotPartitions=2
+      # Reaproveita os processos Python dos executores entre lotes (UDF de pseudonimização)
+      - --conf
+      - spark.python.worker.reuse=true
+      - --py-files
+      - /opt/jobs/common/mascaramento.py
+      - /opt/jobs/streaming/speed_layer.py
+    environment:
+      <<: *spark-env
+      PII_HMAC_KEY: ${PII_HMAC_KEY}
+      DW_DB_PASSWORD: ${DW_DB_PASSWORD}
+      STATSD_HOST: statsd-exporter
+      # Intervalo do micro-batch. Medido neste ambiente: lotes de 10 s levavam ~17 s (atraso
+      # crescente); lotes de 30 s levam ~13 s (latência média ~28 s, estável). O custo por
+      # lote é quase todo fixo (commits transacionais no Delta), então lotes maiores diluem esse custo.
+      INTERVALO_LOTE: ${SPEED_INTERVALO_LOTE:-30 seconds}
+    ports:
+      - "${SPARK_STREAMING_UI_PORT}:4040"
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      silo-init:
+        condition: service_completed_successfully
+      db-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4040')"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    logging: *default-logging
+
+  # =========================================================
+  # SIMULAÇÃO (profile: simulation — ligado sob demanda: make gerador-start)
+  # =========================================================
+
+  gerador:
+    build:
+      context: ./generator
+    image: case-saude/gerador:1.0
+    profiles: ["simulation"]
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      EVENTOS_POR_SEGUNDO: ${GERADOR_EVENTOS_POR_SEGUNDO}
+      TAXA_INVALIDOS: ${GERADOR_TAXA_INVALIDOS}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     logging: *default-logging
     networks: [datanet]
 

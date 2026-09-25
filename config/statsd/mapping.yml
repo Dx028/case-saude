@@ -16,3 +16,9 @@ mappings:
     name: "airflow_executor_$1"
   - match: "airflow.scheduler_heartbeat"
     name: "airflow_scheduler_heartbeat"
+  # Speed layer (progresso do Structured Streaming, enviado pelo listener do job)
+  - match: "spark_streaming.*.*"
+    name: "spark_streaming_$2"
+    labels: { query: "$1" }
+  - match: "speed_layer.*"
+    name: "speed_layer_$1"

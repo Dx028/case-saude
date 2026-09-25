@@ -24,7 +24,7 @@ def checar(nome, fn):
         detalhe = fn()
         resultados[nome] = ("OK", detalhe)
     except Exception as exc:  # noqa: BLE001 - queremos reportar qualquer falha
-        resultados[nome] = ("ERRO", str(exc).splitlines()[0][:200])
+        resultados[nome] = ("ERRO", " | ".join([l.strip() for l in str(exc).splitlines() if "Exception" in l or "Caused by" in l][:4])[:600] or str(exc)[:300])
 
 
 # 1. Lakehouse: Delta Lake no Silo --------------------------------------
