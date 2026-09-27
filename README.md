@@ -45,37 +45,36 @@ cd case-saude
 make setup    # verifica pré-requisitos, gera o .env (senhas aleatórias) e os certificados TLS
 make up       # constrói as imagens e sobe todos os serviços
 make smoke    # verifica a plataforma de ponta a ponta
+make metabase # cria a conexão com o DW e os painéis do Metabase
 ```
 
 O primeiro `make up` leva de 10 a 20 minutos, pois constrói as imagens do Spark e do Airflow. As execuções seguintes usam o cache e levam poucos minutos.
 
 Nenhum segredo é versionado: o `.env` e a pasta `certs/` são gerados localmente por `make setup` e estão no `.gitignore`.
 
-### Configuração inicial do Metabase (manual, feita uma única vez)
+### Painéis do Metabase (criados como código)
 
-O Metabase exige a criação do administrador pela interface no primeiro acesso:
+Os painéis não são montados à mão: o script `scripts/metabase_paineis.py` usa a API do Metabase para criar a conta de administrador (numa instalação nova), a conexão com o DW e todos os painéis. Assim, a camada de visualização é reproduzível como o restante da plataforma.
 
-1. Acesse http://localhost:3000, escolha o idioma e crie o usuário administrador (conta local, sem cadastro externo).
-2. Na etapa de adicionar dados, escolha **PostgreSQL** e preencha:
+```bash
+make metabase
+```
 
-| Campo | Valor |
+| Painel | Conteúdo |
 |---|---|
-| Nome de exibição | `DW Saúde` |
-| Host / Porta | `postgres` / `5432` |
-| Banco de dados | `dw` |
-| Usuário | `bi_reader` (somente leitura) |
-| Senha | valor de `BI_READER_PASSWORD` no `.env` |
-| Usar conexão segura (SSL) | **Ativado**, modo `require` |
-| Schemas | Apenas `gold` |
+| 1. Vigilância de SRAG (batch) | Casos, óbitos, letalidade e UTI; curva epidêmica por semana e ano; classificação final; letalidade por faixa etária; casos por UF e municípios com mais casos |
+| 2. Operação hospitalar em tempo real | Internações ativas, UTI e pacientes graves; alertas por minuto; ocupação por UF; últimos alertas com a latência do evento até o DW |
+| 3. Visão integrada (Lambda) | A visão batch (SRAG no ano) e a visão em tempo real (ocupação atual), lado a lado por UF |
+| 4. Qualidade e ingestão | Resultado de cada regra de qualidade e controle das cargas incrementais |
 
-Sem SSL a conexão é recusada pelo banco: o PostgreSQL aceita apenas conexões criptografadas.
+A conexão usa o usuário `bi_reader` (somente leitura, schema `gold` e resultados de qualidade) com TLS obrigatório. O login do Metabase usa `METABASE_ADMIN_EMAIL` e `METABASE_ADMIN_PASSWORD`, do `.env`. A cada execução, os itens da coleção "Case Saúde" são arquivados e recriados, de modo que o código é sempre a fonte da verdade.
 
 ### Acessos
 
 | Serviço | Endereço | Usuário | Senha |
 |---|---|---|---|
 | Airflow | http://localhost:8080 | `admin` | `AIRFLOW_ADMIN_PASSWORD` |
-| Metabase | http://localhost:3000 | definido no primeiro acesso | definida no primeiro acesso |
+| Metabase | http://localhost:3000 | `METABASE_ADMIN_EMAIL` | `METABASE_ADMIN_PASSWORD` |
 | Grafana | http://localhost:3001 | `admin` | `GRAFANA_ADMIN_PASSWORD` |
 | Prometheus | http://localhost:9090 | — | — |
 | Kafka UI | http://localhost:8082 | `admin` | `KAFKA_UI_PASSWORD` |
@@ -103,6 +102,7 @@ As senhas ficam no arquivo `.env`. Exemplo: `grep GRAFANA_ADMIN_PASSWORD .env`.
 | `make speed-logs` / `make gerador-logs` | Logs da speed layer / do gerador |
 | `make batch-srag` | Dispara a batch layer do SRAG (OpenDataSUS e IBGE) |
 | `make batch-status` | Situação das cargas e resultado das verificações de qualidade |
+| `make metabase` | Cria/atualiza os painéis do Metabase pela API (painéis como código) |
 | `make batch-reprocessar` | Reprocessa o SRAG a partir da landing, sem novo download (idempotente) |
 | `make test` | Testes automatizados das transformações e do mascaramento |
 | `make scale-workers n=3` | Ajusta o número de workers Spark (escala horizontal) |

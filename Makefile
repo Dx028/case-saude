@@ -5,7 +5,7 @@ COMPOSE := docker compose
 # Profiles do .env + "simulation" (o gerador). A opção --profile substituiria a lista do .env.
 COMPOSE_SIM := COMPOSE_PROFILES=$(shell grep ^COMPOSE_PROFILES= .env 2>/dev/null | cut -d= -f2),simulation docker compose
 
-.PHONY: help setup check env certs smoke smoke-rapido test batch-srag batch-status batch-reprocessar gerador-start gerador-stop gerador-logs speed-logs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
+.PHONY: help setup check env certs smoke smoke-rapido test batch-srag batch-status batch-reprocessar metabase gerador-start gerador-stop gerador-logs speed-logs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
 
 help: ## Lista os comandos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -95,6 +95,9 @@ test: ## Roda os testes automatizados (Spark local, sem dependências externas)
 batch-srag: ## Dispara a batch layer do SRAG (OpenDataSUS -> landing -> bronze -> silver -> gold)
 	$(COMPOSE) exec airflow-scheduler airflow dags unpause batch_srag
 	$(COMPOSE) exec airflow-scheduler airflow dags trigger batch_srag
+
+metabase: ## Cria/atualiza pela API a conexão com o DW e os painéis do Metabase
+	@python3 scripts/metabase_paineis.py
 
 batch-reprocessar: ## Reprocessa o SRAG a partir da landing (bronze, silver e gold), sem novo download
 	@$(COMPOSE) exec -T postgres psql -U $$(grep ^POSTGRES_USER= .env | cut -d= -f2) -d dw -c \
