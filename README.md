@@ -174,6 +174,18 @@ Etapas e decisões:
 
 Os anos carregados são definidos pela variável `SRAG_ANOS` (padrão: 2024 a 2026).
 
+Resultado da carga de 2024 a 2026 (disco de dados em HD mecânico, 2 núcleos para o lote):
+
+| Ano | Arquivo | Notificações | Situação da base |
+|---|---|---|---|
+| 2024 | 302 MB | 267.986 | congelada |
+| 2025 | 382 MB | 336.391 | viva (atualização semanal) |
+| 2026 | 237 MB | 212.278 | viva (ano corrente) |
+
+- **Total:** 816.655 notificações, agregadas em cerca de 531 mil linhas na fato semanal.
+- **Qualidade:** 26 regras aprovadas; nenhuma duplicidade nem notificação sem número.
+- **Tempo:** cerca de 30 minutos na carga completa (download dispensado quando o arquivo não mudou), sendo cerca de 15 minutos em bronze e silver e 7 minutos na gold.
+
 ### Limitações conhecidas
 
 - **Gravações concorrentes no Delta Lake sobre S3:** o object storage não oferece a operação atômica "gravar somente se não existir" de que o log de transações do Delta precisa. Por isso, duas aplicações Spark gravando **na mesma tabela** ao mesmo tempo podem falhar. No projeto, cada tabela tem um único gravador (a speed layer ou o job em lote correspondente), as DAGs usam `max_active_runs=1` e o smoke test grava em uma tabela exclusiva por execução. Em produção, a solução é um LogStore com coordenação externa (por exemplo, o baseado em DynamoDB na AWS) ou um formato com catálogo transacional, como o Apache Iceberg.
@@ -187,6 +199,10 @@ Os anos carregados são definidos pela variável `SRAG_ANOS` (padrão: 2024 a 20
 | Scripts falham com `\r: command not found` | Quebras de linha do Windows: `git config --global core.autocrlf input` e clone novamente |
 | Containers reiniciando ou jobs interrompidos | Memória insuficiente: aumente o limite no `.wslconfig` ou suba menos profiles |
 | Metabase: `pg_hba.conf rejects connection ... no encryption` | SSL desativado na conexão do DW: ative-o com o modo `require` |
+| Build ou serviços falham com `read-only file system` | Disco do Windows cheio: o disco virtual do Docker não consegue crescer e passa a somente leitura. Libere espaço ou mova o disco (Docker Desktop → Settings → Resources → Advanced → Disk image location). O alerta `DiscoQuaseCheio` monitora o disco virtual por dentro; o espaço livre no disco do Windows, causa deste incidente, precisa ser monitorado pelo lado do host (ex.: `windows_exporter`) |
+| Master do Spark não responde ("All masters are unresponsive") | Memória de serviços ociosos enviada ao swap em disco lento. Mantenha o swap em SSD (`swapfile=` no `.wslconfig`) e reduza o `vm.swappiness` para 10 |
+| Serviço saudável, mas a porta não responde no host (`curl` retorna `000`) | Encaminhamento de portas desatualizado após reiniciar o WSL: `docker compose up -d --force-recreate <serviço>` |
+| Docker Desktop: erro de integração com o Ubuntu após reiniciar o WSL | Settings → Resources → WSL Integration: desligue e religue o Ubuntu |
 | Após religar a máquina, serviço falha com `No such file or directory` em arquivo de configuração | O container foi montado antes de o WSL estar ativo: `docker compose up -d --force-recreate <serviço>`. Os serviços usam `restart: on-failure` justamente para não religarem sozinhos no boot; a rotina é abrir o Docker Desktop, abrir o Ubuntu e rodar `make up` |
 | Container com `Exited (127)` depois de reiniciar o Docker | Montagem desatualizada: `docker compose up -d --force-recreate <serviço>` |
 | Comandos `docker` travados, sem resposta | Docker Desktop sobrecarregado: `timeout 20 docker info`; se não responder, reinicie o Docker Desktop e rode `wsl --shutdown` |

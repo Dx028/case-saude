@@ -46,6 +46,14 @@ groups:
           resumo: "Container {{ $labels.name }} perto do limite de memória"
           descricao: "Uso acima de 90% do limite: risco de encerramento por falta de memória (OOM)."
 
+      - alert: DiscoQuaseCheio
+        expr: max by (device) (container_fs_usage_bytes{id="/", device=~"/dev/sd.*"} / container_fs_limit_bytes{id="/", device=~"/dev/sd.*"}) > 0.85
+        for: 10m
+        labels: { severidade: critica }
+        annotations:
+          resumo: "Disco do ambiente Docker acima de 85%"
+          descricao: "O dispositivo {{ $labels.device }} está com {{ $value | humanizePercentage }} de uso. Disco cheio torna o sistema de arquivos somente leitura e derruba a plataforma em cascata."
+
       - alert: PostgresConexoesAltas
         expr: sum(pg_stat_database_numbackends) > 80
         for: 5m

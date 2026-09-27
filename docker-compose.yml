@@ -43,6 +43,9 @@ x-airflow-common: &airflow-common
     # Disco mecânico: a primeira importação das DAGs (com o provider do Spark) pode passar de 30 s
     AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "120"
     AIRFLOW__DAG_PROCESSOR__DAG_FILE_PROCESSOR_TIMEOUT: "180"
+    # Token das tarefas junto à Execution API: com a máquina carregada, uma tarefa pode
+    # demorar a iniciar e receber "Invalid auth token" (padrão: 600 s)
+    AIRFLOW__EXECUTION_API__JWT_EXPIRATION_TIME: "3600"
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
     AIRFLOW__API_AUTH__JWT_ISSUER: case-saude

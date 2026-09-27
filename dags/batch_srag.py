@@ -158,7 +158,10 @@ def batch_srag():
     bronze_silver = SparkSubmitOperator(
         task_id="bronze_silver", name="batch-srag-bronze-silver",
         application="/opt/jobs/batch/srag_bronze_silver.py",
-        retries=0,  # reprovação por qualidade é determinística: repetir não resolve
+        # Uma retentativa cobre falhas de infraestrutura (ex.: master do Spark lento para registrar
+        # a aplicação). Uma reprovação por qualidade é determinística e falha de novo.
+        retries=1,
+        retry_delay=timedelta(minutes=2),
         **SPARK_COMUM)
 
     gold = SparkSubmitOperator(
