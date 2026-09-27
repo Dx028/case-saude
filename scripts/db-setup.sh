@@ -2,6 +2,7 @@
 # Aplica os scripts SQL idempotentes a cada "make up":
 #   sql/cluster/*.sql -> objetos globais do servidor (banco postgres)
 #   sql/dw/*.sql      -> schemas, papéis e tabelas do data warehouse
+#   sql/prontuario/*.sql -> schema e publicação do prontuário (fonte do CDC)
 set -eu
 
 export PGPASSWORD="$POSTGRES_PASSWORD"
@@ -19,4 +20,5 @@ aplicar() {
 
 aplicar postgres /sql/cluster/*.sql
 aplicar dw /sql/dw/*.sql
+aplicar prontuario /sql/prontuario/*.sql
 echo "[db-setup] banco pronto"

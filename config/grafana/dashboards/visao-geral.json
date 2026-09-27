@@ -7,7 +7,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -770,7 +770,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "max(spark_streaming_offsets_behind_latest_max)",
+          "expr": "max(spark_streaming_offsets_behind_latest_max{query=\"speed_layer\"})",
           "instant": false
         }
       ]
@@ -835,7 +835,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "max(spark_streaming_batch_duration_ms)",
+          "expr": "max(spark_streaming_batch_duration_ms{query=\"speed_layer\"})",
           "instant": false
         }
       ]
@@ -948,7 +948,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "max(spark_streaming_input_rows_per_second)",
+          "expr": "max(spark_streaming_input_rows_per_second{query=\"speed_layer\"})",
           "legendFormat": "entrada"
         },
         {
@@ -957,7 +957,7 @@
             "uid": "prometheus"
           },
           "refId": "B",
-          "expr": "max(spark_streaming_processed_rows_per_second)",
+          "expr": "max(spark_streaming_processed_rows_per_second{query=\"speed_layer\"})",
           "legendFormat": "processamento"
         }
       ]
@@ -1441,6 +1441,350 @@
       ]
     },
     {
+      "id": 33,
+      "type": "row",
+      "title": "CDC do prontuário (Debezium)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "panels": []
+    },
+    {
+      "id": 34,
+      "type": "stat",
+      "title": "Operações no prontuário/min",
+      "description": "Alterações feitas na fonte OLTP",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 67
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(rate(gerador_prontuario_operacoes_total[5m])) * 60"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "stat",
+      "title": "Mudanças aplicadas pelo CDC/min",
+      "description": "Eventos do Debezium processados pela speed layer",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 67
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(rate({__name__=~\"cdc_prontuario_mudancas(_total)?\"}[5m])) * 60"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "type": "stat",
+      "title": "Titulares eliminados (24h)",
+      "description": "Eliminações (LGPD) propagadas da origem até a silver e a bronze",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 67
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(increase({__name__=~\"cdc_prontuario_eliminacoes(_total)?\"}[24h]))"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "type": "stat",
+      "title": "Duração do lote do CDC",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 67
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "max(spark_streaming_batch_duration_ms{query=\"cdc_prontuario\"})"
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "type": "timeseries",
+      "title": "Operações na fonte, por tipo",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 71
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (operacao) (rate(gerador_prontuario_operacoes_total[5m])) * 60",
+          "legendFormat": "{{operacao}}"
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "CDC: entrada x processamento (eventos/s)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "max(spark_streaming_input_rows_per_second{query=\"cdc_prontuario\"})",
+          "legendFormat": "entrada"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "max(spark_streaming_processed_rows_per_second{query=\"cdc_prontuario\"})",
+          "legendFormat": "processamento"
+        }
+      ]
+    },
+    {
       "id": 21,
       "type": "row",
       "title": "Logs",
@@ -1449,7 +1793,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 78
       },
       "panels": []
     },
@@ -1465,7 +1809,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 79
       },
       "fieldConfig": {
         "defaults": {
@@ -1509,7 +1853,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 74
+        "y": 86
       },
       "options": {
         "showTime": true,

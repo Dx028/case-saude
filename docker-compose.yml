@@ -192,8 +192,7 @@ services:
       PGSSLMODE: require
     volumes:
       - ./scripts:/scripts:ro
-      - ./sql/cluster:/sql/cluster:ro
-      - ./sql/dw:/sql/dw:ro
+      - ./sql:/sql:ro
     logging: *default-logging
     networks: [datanet]
 
@@ -301,6 +300,10 @@ services:
       VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      # Segredos dos conectores resolvidos em tempo de execução: "${env:VARIAVEL}" na configuração
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      OLTP_DB_PASSWORD: ${OLTP_DB_PASSWORD}
       HEAP_OPTS: "-Xms512m -Xmx1g"
     ports:
       - "${KAFKA_CONNECT_PORT}:8083"
@@ -314,6 +317,23 @@ services:
       resources:
         limits:
           memory: 1536m
+    logging: *default-logging
+    networks: [datanet]
+
+  # Registra o conector de CDC do prontuário (Debezium) e encerra
+  connect-init:
+    image: quay.io/debezium/connect:3.5.2.Final
+    profiles: ["stream"]
+    restart: "no"
+    entrypoint: ["/bin/bash", "/scripts/registrar-conector.sh"]
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+      db-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./config/debezium:/config/debezium:ro
     logging: *default-logging
     networks: [datanet]
 
@@ -340,7 +360,7 @@ services:
       KAFKA_CLUSTERS_0_MASKING_0_FIELDS_2: telefone
       KAFKA_CLUSTERS_0_MASKING_0_FIELDS_3: email
       KAFKA_CLUSTERS_0_MASKING_0_FIELDS_4: endereco
-      KAFKA_CLUSTERS_0_MASKING_0_TOPICVALUESPATTERN: "saude\\..*"
+      KAFKA_CLUSTERS_0_MASKING_0_TOPICVALUESPATTERN: "(saude|prontuario)\\..*"
       SPRING_SECURITY_USER_NAME: admin
       SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD}
     ports:
@@ -524,6 +544,8 @@ services:
       MB_DB_CONNECTION_URI: postgres://postgres:5432/metabase?user=metabase&password=${METABASE_DB_PASSWORD}&sslmode=require
       # Criptografa as credenciais das fontes de dados salvas pelo Metabase
       MB_ENCRYPTION_SECRET_KEY: ${METABASE_ENCRYPTION_KEY}
+      # Assina as sessões: sem ela, quem acessasse o banco do Metabase poderia forjar uma sessão
+      MB_SESSION_SECRET_KEY: ${METABASE_SESSION_SECRET}
       # Privacidade: sem telemetria para terceiros
       MB_ANON_TRACKING_ENABLED: "false"
       MB_CHECK_FOR_UPDATES: "false"
@@ -751,6 +773,11 @@ services:
       # crescente); lotes de 30 s levam ~13 s (latência média ~28 s, estável). O custo por
       # lote é quase todo fixo (commits transacionais no Delta), então lotes maiores diluem esse custo.
       INTERVALO_LOTE: ${SPEED_INTERVALO_LOTE:-30 seconds}
+      # CDC do prontuário: espelho da fonte com até ~1 min de defasagem
+      CDC_INTERVALO_LOTE: ${CDC_INTERVALO_LOTE:-60 seconds}
+      # Geração dos checkpoints (make streaming-recomecar) e ponto de partida de um checkpoint novo
+      STREAMING_GERACAO: ${STREAMING_GERACAO:-1}
+      SPEED_OFFSETS_INICIAIS: ${SPEED_OFFSETS_INICIAIS:-earliest}
     ports:
       - "${SPARK_STREAMING_UI_PORT}:4040"
     depends_on:
@@ -788,8 +815,13 @@ services:
       KAFKA_BOOTSTRAP: kafka:9092
       EVENTOS_POR_SEGUNDO: ${GERADOR_EVENTOS_POR_SEGUNDO}
       TAXA_INVALIDOS: ${GERADOR_TAXA_INVALIDOS}
+      # Operações no prontuário (fonte do CDC); 0 desliga
+      PRONTUARIO_OPS_POR_SEGUNDO: ${GERADOR_PRONTUARIO_OPS:-2}
+      PRONTUARIO_DSN: "host=postgres port=5432 dbname=prontuario user=prontuario_app password=${OLTP_DB_PASSWORD} sslmode=require"
     depends_on:
       kafka:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     deploy:
       resources:

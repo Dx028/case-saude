@@ -159,6 +159,19 @@ PAINEIS = [
                        hospital_uf AS "UF", setor AS "Setor", faixa_etaria AS "Faixa etária",
                        cid_principal AS "CID", round(extract(epoch FROM latencia)::numeric, 1) AS "Latência (s)"
                 FROM gold.vw_alertas_clinicos ORDER BY ocorrido_em DESC LIMIT 25""", "table"), 0, 12, 24, 9),
+            (texto("### Prontuário (CDC)\nEspelho do sistema de prontuário, alimentado pelo **Debezium** a partir do "
+                   "log de transações do PostgreSQL. Eliminações de titulares na origem (LGPD) são propagadas até o "
+                   "lakehouse."), 0, 21, 24, 2),
+            (pergunta_sql("CDC — pacientes no espelho",
+                          "SELECT COALESCE(max(pacientes), 0) AS pacientes FROM gold.cdc_pacientes", "scalar"),
+             0, 23, 6, 4),
+            (pergunta_sql("CDC — titulares eliminados (LGPD)",
+                          "SELECT COALESCE(max(eliminados), 0) AS eliminados FROM gold.cdc_pacientes", "scalar"),
+             0, 27, 6, 4),
+            (pergunta_sql("CDC — atendimentos por tipo e situação", """
+                SELECT tipo, status, total FROM gold.cdc_atendimentos ORDER BY 1, 2""", "bar",
+                          {"graph.dimensions": ["tipo", "status"], "graph.metrics": ["total"],
+                           "stackable.stack_type": "stacked"}), 6, 23, 18, 8),
         ],
     },
     {

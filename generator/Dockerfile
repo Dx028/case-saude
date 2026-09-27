@@ -5,7 +5,7 @@ RUN useradd --create-home --uid 10001 gerador
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY gerador.py .
+COPY gerador.py prontuario.py ./
 
 USER gerador
 EXPOSE 8000

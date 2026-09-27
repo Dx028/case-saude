@@ -34,7 +34,7 @@ http() { curl -fsS -m 5 "$@"; }
 
 # ---------------------------------------------------------------
 secao "1. Containers (profiles: ${COMPOSE_PROFILES})"
-UNICA_VEZ="db-setup silo-init kafka-init airflow-init"
+UNICA_VEZ="db-setup silo-init kafka-init connect-init airflow-init"
 
 # Containers recém-criados passam pelo estado "starting" até o primeiro healthcheck:
 # aguarda até 3 minutos antes de avaliar (ex.: logo após um "make up")
@@ -82,6 +82,7 @@ checar "DW: dimensão calendário populada"      3 bash -c "docker compose exec 
 if ativo stream; then
   checar "Kafka: 3 tópicos de negócio criados" 6 bash -c "[[ \$(docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list | grep -c '^saude\.') -eq 3 ]]"
   checar "Kafka Connect com conector Debezium" 12 bash -c "curl -fsS -m 5 http://localhost:${KAFKA_CONNECT_PORT}/connector-plugins | jq -e 'any(.[]; .class | test(\"PostgresConnector\"))'"
+  checar "CDC: conector do prontuário em execução" 12 bash -c "curl -fsS -m 5 http://localhost:${KAFKA_CONNECT_PORT}/connectors/prontuario-cdc/status | jq -e '.connector.state == \"RUNNING\" and all(.tasks[]; .state == \"RUNNING\")'"
   checar "Kafka UI respondendo"                6 bash -c "[[ \$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:${KAFKA_UI_PORT}/) =~ ^(200|302|401)$ ]]"
 fi
 if ativo processing; then
@@ -154,6 +155,32 @@ if [[ "$RAPIDO" != "1" ]] && ativo speed && ativo stream; then
     falha "o alerta de teste não chegou ao DW em 2 minutos (veja: make speed-logs)"
   fi
   SQL "DELETE FROM gold.alerta_clinico_rt WHERE internacao_id LIKE 'smoke-%'" >/dev/null
+fi
+
+# ---------------------------------------------------------------
+if [[ "$RAPIDO" != "1" ]] && ativo speed && ativo stream; then
+  secao "3c. CDC: alteração no prontuário -> Debezium -> Kafka -> Spark -> silver e DW"
+  PSQL_PRONT() { docker compose exec -T postgres psql -U "$POSTGRES_USER" -d prontuario -Atc "$1" 2>/dev/null; }
+  PSQL_DW() { docker compose exec -T postgres psql -U "$POSTGRES_USER" -d dw -Atc "$1" 2>/dev/null; }
+  inicio=$(date -u +%s)
+  cpf="99$(date +%s%N | tail -c 10)"
+  id=$(PSQL_PRONT "INSERT INTO clinico.pacientes (cpf, nome, data_nascimento, sexo, municipio_ibge6, uf)
+                   VALUES ('$cpf', 'Paciente Teste Smoke', '1980-01-01', 'F', '355030', 'SP') RETURNING paciente_id" | head -1)
+  printf '  ...  paciente de teste inserido no prontuário (id %s), aguardando o espelho no DW' "${id:-?}"
+  latencia=""
+  for _ in $(seq 1 36); do   # até 3 minutos (lotes do CDC a cada 60 s)
+    sleep 5; printf '.'
+    latencia=$(PSQL_DW "SELECT extract(epoch FROM atualizado_em)::bigint - $inicio FROM gold.cdc_pacientes
+                        WHERE atualizado_em > to_timestamp($inicio)" | head -1)
+    [[ -n "$latencia" ]] && break
+  done
+  echo
+  if [[ -n "$latencia" ]]; then
+    ok "Alteração capturada do log de transações e refletida no DW em ~${latencia}s"
+  else
+    falha "o CDC não refletiu a alteração em 3 minutos (veja: make cdc-status)"
+  fi
+  PSQL_PRONT "DELETE FROM clinico.pacientes WHERE paciente_id = ${id:-0}" >/dev/null   # limpeza (propaga como eliminação)
 fi
 
 # ---------------------------------------------------------------

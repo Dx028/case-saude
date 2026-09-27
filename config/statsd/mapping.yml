@@ -22,3 +22,5 @@ mappings:
     labels: { query: "$1" }
   - match: "speed_layer.*"
     name: "speed_layer_$1"
+  - match: "cdc_prontuario.*"
+    name: "cdc_prontuario_$1"

@@ -34,6 +34,7 @@ from pyspark.sql.window import Window
 DIR_COMMON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common")
 sys.path.insert(0, DIR_COMMON)
 import mascaramento as m  # noqa: E402
+import cdc_prontuario  # noqa: E402
 
 APP = "speed_layer"
 TOPICO_ADMISSOES = "saude.eventos.admissoes"
@@ -44,7 +45,12 @@ BRONZE = "s3a://bronze/eventos_saude"
 SILVER_ADMISSOES = "s3a://silver/admissoes"
 SILVER_SINAIS = "s3a://silver/sinais_vitais"
 SILVER_ESTADO = "s3a://silver/internacoes_estado"
-CHECKPOINT = "s3a://bronze/_checkpoints/speed_layer"
+# Geração do checkpoint: incrementar recomeça as queries do zero (ex.: checkpoint danificado).
+# O identificador de idempotência das gravações (txnAppId) acompanha a geração, pois a numeração
+# dos lotes recomeça em 0 e, sem isso, o Delta ignoraria os lotes novos como já gravados.
+GERACAO = os.getenv("STREAMING_GERACAO", "1")
+SUFIXO = "" if GERACAO == "1" else f".g{GERACAO}"
+CHECKPOINT = f"s3a://bronze/_checkpoints/speed_layer{SUFIXO}"
 
 KAFKA = os.getenv("KAFKA_BOOTSTRAP", "kafka:9092")
 JDBC_URL = "jdbc:postgresql://postgres:5432/dw?sslmode=require"
@@ -269,7 +275,7 @@ def mensagens_dlq(invalidos: DataFrame) -> DataFrame:
 # ------------------------------------------------------------------ gravação
 def _delta_append(df: DataFrame, caminho: str, tabela: str, batch_id: int, particao=None):
     w = (df.write.format("delta").mode("append")
-         .option("txnAppId", f"{APP}.{tabela}").option("txnVersion", batch_id))
+         .option("txnAppId", f"{APP}.{tabela}{SUFIXO}").option("txnVersion", batch_id))
     if particao:
         w = w.partitionBy(particao)
     w.save(caminho)
@@ -283,9 +289,17 @@ def _jdbc(df: DataFrame, tabela: str, modo: str):
      .save())
 
 
-class Contadores:
-    """Totais do último lote, enviados ao StatsD pelo listener."""
-    validos = invalidos = alertas = 0
+# Totais do último lote de cada query, enviados ao StatsD pelo listener
+METRICAS = {APP: {}, cdc_prontuario.QUERY: {}}
+
+
+def _gravar_serving(df: DataFrame, tabela: str):
+    _jdbc(df, tabela, "overwrite")
+
+
+def _ler_serving(spark, consulta: str) -> DataFrame:
+    return (spark.read.format("jdbc").option("url", JDBC_URL).option("query", consulta)
+            .option("user", "dw_owner").option("password", os.environ["DW_DB_PASSWORD"]).load())
 
 
 def processar_lote(lote: DataFrame, batch_id: int):
@@ -310,8 +324,8 @@ def processar_lote(lote: DataFrame, batch_id: int):
 
     # 3. DLQ
     invalidos = nok(adm).unionByName(nok(sin), allowMissingColumns=True)
-    Contadores.invalidos = invalidos.count()
-    if Contadores.invalidos:
+    n_invalidos = invalidos.count()
+    if n_invalidos:
         mensagens_dlq(invalidos).write.format("kafka") \
             .option("kafka.bootstrap.servers", KAFKA).option("topic", TOPICO_DLQ).save()
 
@@ -320,7 +334,7 @@ def processar_lote(lote: DataFrame, batch_id: int):
     s_sin = silver_sinais(ok(sin)).persist()
     _delta_append(s_adm, SILVER_ADMISSOES, "silver_admissoes", batch_id, particao=["data_evento"])
     _delta_append(s_sin, SILVER_SINAIS, "silver_sinais", batch_id, particao=["data_evento"])
-    Contadores.validos = s_adm.count() + s_sin.count()
+    n_validos = s_adm.count() + s_sin.count()
 
     # 5. Estado atual das internações (MERGE: só aplica eventos mais recentes)
     estado_lote = estado_internacoes(s_adm)
@@ -336,8 +350,10 @@ def processar_lote(lote: DataFrame, batch_id: int):
 
     # 6. Serving no DW (consumo em tempo real pelo BI)
     alertas = derivar_alertas(s_sin, estado, batch_id).persist()
-    Contadores.alertas = alertas.count()
-    if Contadores.alertas:
+    n_alertas = alertas.count()
+    METRICAS[APP].update({"eventos_validos": n_validos, "eventos_invalidos": n_invalidos,
+                          "alertas_clinicos": n_alertas})
+    if n_alertas:
         _jdbc(alertas, "gold.alerta_clinico_rt", "append")
     _jdbc(ocupacao(estado), "gold.ocupacao_rt", "overwrite")
 
@@ -368,8 +384,10 @@ class MetricasStatsD(StreamingQueryListener):
         p = event.progress
         atraso = [s.metrics.get("avgOffsetsBehindLatest") for s in p.sources if s.metrics]
         atraso_max = [s.metrics.get("maxOffsetsBehindLatest") for s in p.sources if s.metrics]
-        g = lambda nome, v: f"spark_streaming.{APP}.{nome}:{float(v or 0)}|g"  # noqa: E731
-        c = lambda nome, v: f"{APP}.{nome}:{int(v or 0)}|c"  # noqa: E731
+        query = p.name or APP
+        g = lambda nome, v: f"spark_streaming.{query}.{nome}:{float(v or 0)}|g"  # noqa: E731
+        c = lambda nome, v: f"{query}.{nome}:{int(v or 0)}|c"  # noqa: E731
+        contadores = METRICAS.get(query, {})
         self._enviar([
             g("input_rows_per_second", p.inputRowsPerSecond),
             g("processed_rows_per_second", p.processedRowsPerSecond),
@@ -378,10 +396,8 @@ class MetricasStatsD(StreamingQueryListener):
             g("batch_id", p.batchId),
             g("offsets_behind_latest_avg", sum(float(x) for x in atraso if x) if atraso else 0),
             g("offsets_behind_latest_max", max((float(x) for x in atraso_max if x), default=0)),
-            c("eventos_validos", Contadores.validos),
-            c("eventos_invalidos", Contadores.invalidos),
-            c("alertas_clinicos", Contadores.alertas),
-        ])
+        ] + [c(nome, valor) for nome, valor in contadores.items()])
+        contadores.clear()
 
     def onQueryIdle(self, event):
         pass
@@ -411,8 +427,12 @@ def main():
     fonte = (spark.readStream.format("kafka")
              .option("kafka.bootstrap.servers", KAFKA)
              .option("subscribe", f"{TOPICO_ADMISSOES},{TOPICO_SINAIS}")
-             .option("startingOffsets", "earliest")
-             .option("maxOffsetsPerTrigger", int(os.getenv("MAX_EVENTOS_POR_LOTE", "20000")))
+             # Só vale para checkpoint novo: "earliest" numa instalação nova; "latest" ao recomeçar
+             # a geração, para não reprocessar todo o histórico de eventos simulados
+             .option("startingOffsets", os.getenv("SPEED_OFFSETS_INICIAIS", "earliest"))
+             # Teto por lote: após uma parada, o acumulado é recuperado em vários lotes de tamanho
+             # normal, em vez de um lote gigante que atrasa todos os seguintes
+             .option("maxOffsetsPerTrigger", int(os.getenv("MAX_EVENTOS_POR_LOTE", "5000")))
              .option("failOnDataLoss", "false")
              .load())
 
@@ -424,7 +444,13 @@ def main():
                 .start())
     print(f"[{datetime.now(timezone.utc).isoformat()}] speed layer iniciada: {json.dumps({'id': str(consulta.id)})}",
           flush=True)
-    consulta.awaitTermination()
+
+    # Segunda query na mesma aplicação: CDC do prontuário (Debezium), com checkpoint próprio
+    cdc = cdc_prontuario.iniciar(spark, KAFKA, _gravar_serving, METRICAS[cdc_prontuario.QUERY],
+                                 lambda consulta: _ler_serving(spark, consulta))
+    print(f"[{datetime.now(timezone.utc).isoformat()}] CDC do prontuário iniciado: {json.dumps({'id': str(cdc.id)})}",
+          flush=True)
+    spark.streams.awaitAnyTermination()
 
 
 if __name__ == "__main__":

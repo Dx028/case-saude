@@ -15,6 +15,8 @@ Configuração por variáveis de ambiente:
   INTERNACOES_INICIAIS   internações abertas no início  (padrão: 150)
   MAX_INTERNACOES        limite de internações ativas   (padrão: 3000)
   SEMENTE                semente aleatória (reprodutibilidade)
+  PRONTUARIO_OPS_POR_SEGUNDO  operações no prontuário (fonte do CDC); 0 desliga (padrão: 2)
+  PRONTUARIO_DSN              conexão com o banco do prontuário (TLS obrigatório)
   DRY_RUN=1              imprime eventos em vez de publicar (testes)
 """
 import json
@@ -86,6 +88,7 @@ class Gerador:
             self.fake.seed_instance(semente)
         self.hospitais = self._criar_hospitais()
         self.ativas: dict[str, Internacao] = {}
+        self.capitais = CAPITAIS
 
     # ---------------------------------------------------------------- cadastros
     def _criar_hospitais(self):
@@ -269,8 +272,15 @@ def main():
     vazao_alvo = Gauge("gerador_vazao_alvo_eventos_por_segundo", "Vazão configurada")
     latencia = Histogram("gerador_latencia_entrega_segundos", "Tempo até a confirmação do Kafka",
                          buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5))
+    ops_prontuario = Counter("gerador_prontuario_operacoes", "Operações no prontuário (fonte do CDC)", ["operacao"])
     start_http_server(8000)
     vazao_alvo.set(taxa)
+
+    # Fonte OLTP do CDC: operações reais no banco do prontuário, em paralelo aos eventos
+    ops_por_segundo = float(os.getenv("PRONTUARIO_OPS_POR_SEGUNDO", "2"))
+    if ops_por_segundo > 0 and os.getenv("PRONTUARIO_DSN"):
+        from prontuario import SimuladorProntuario
+        SimuladorProntuario(gerador, os.environ["PRONTUARIO_DSN"], ops_por_segundo, ops_prontuario).iniciar()
 
     producer = Producer({
         "bootstrap.servers": os.getenv("KAFKA_BOOTSTRAP", "kafka:9092"),

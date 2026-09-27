@@ -1,0 +1,23 @@
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "tasks.max": "1",
+  "database.hostname": "postgres",
+  "database.port": "5432",
+  "database.dbname": "prontuario",
+  "database.user": "prontuario_app",
+  "database.password": "${env:OLTP_DB_PASSWORD}",
+  "database.sslmode": "require",
+  "topic.prefix": "prontuario",
+  "plugin.name": "pgoutput",
+  "publication.name": "dbz_prontuario",
+  "publication.autocreate.mode": "disabled",
+  "slot.name": "debezium_prontuario",
+  "schema.include.list": "clinico",
+  "table.include.list": "clinico.pacientes,clinico.atendimentos",
+  "snapshot.mode": "initial",
+  "tombstones.on.delete": "false",
+  "heartbeat.interval.ms": "30000",
+  "topic.creation.default.replication.factor": "1",
+  "topic.creation.default.partitions": "3",
+  "topic.creation.default.retention.ms": "604800000"
+}

@@ -73,6 +73,16 @@ groups:
 
   - name: speed_layer
     rules:
+      - alert: CdcSemProgresso
+        expr: |
+          changes(spark_streaming_batch_id{query="cdc_prontuario"}[10m]) == 0
+          and on() sum(rate(gerador_prontuario_operacoes_total[10m])) > 0
+        for: 5m
+        labels: { severidade: alta }
+        annotations:
+          resumo: "CDC do prontuário parado"
+          descricao: "Há alterações no prontuário, mas nenhum lote do CDC foi concluído em 10 minutos: verifique o conector (make cdc-status)."
+
       - alert: SpeedLayerAtrasada
         expr: max(spark_streaming_offsets_behind_latest_max) > 20000
         for: 5m
@@ -83,7 +93,7 @@ groups:
 
       - alert: SpeedLayerSemProgresso
         expr: |
-          changes(spark_streaming_batch_id[5m]) == 0
+          changes(spark_streaming_batch_id{query="speed_layer"}[5m]) == 0
           and on() sum(rate(gerador_eventos_produzidos_total[5m])) > 0
         for: 2m
         labels: { severidade: critica }

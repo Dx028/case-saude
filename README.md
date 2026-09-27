@@ -1,6 +1,6 @@
 # Case de Engenharia de Dados — Plataforma de Dados de Saúde
 
-> **Status:** ambiente completo e verificado (`make smoke`); speed layer e batch layer em funcionamento. CDC e painéis do BI em desenvolvimento.
+> **Status:** plataforma completa e verificada (`make smoke`): speed layer, batch layer, CDC e painéis do BI em funcionamento.
 
 Plataforma de dados para o domínio de saúde, construída inteiramente com ferramentas open source e executada em Docker. A solução segue uma arquitetura Lambda sobre um lakehouse (camadas bronze, silver e gold), com ingestão em lote e em tempo real, observabilidade de ponta a ponta e controles de segurança alinhados à LGPD.
 
@@ -102,6 +102,8 @@ As senhas ficam no arquivo `.env`. Exemplo: `grep GRAFANA_ADMIN_PASSWORD .env`.
 | `make speed-logs` / `make gerador-logs` | Logs da speed layer / do gerador |
 | `make batch-srag` | Dispara a batch layer do SRAG (OpenDataSUS e IBGE) |
 | `make batch-status` | Situação das cargas e resultado das verificações de qualidade |
+| `make cdc-status` | Estado do conector de CDC e comparação entre a origem e o espelho no DW |
+| `make cdc-registrar` | Registra/atualiza o conector do Debezium no Kafka Connect |
 | `make metabase` | Cria/atualiza os painéis do Metabase pela API (painéis como código) |
 | `make batch-reprocessar` | Reprocessa o SRAG a partir da landing, sem novo download (idempotente) |
 | `make test` | Testes automatizados das transformações e do mascaramento |
@@ -153,6 +155,22 @@ O intervalo de 30 segundos foi definido por medição: com lotes de 10 segundos,
 
 As gravações nas tabelas Delta são idempotentes por micro-batch: um reprocessamento após falha não gera duplicatas. No Metabase, as views `vw_alertas_clinicos` (com a latência de cada alerta) e `vw_ocupacao_por_uf` ficam disponíveis após sincronizar o esquema do banco.
 
+### CDC: prontuário no PostgreSQL (Debezium)
+
+O banco `prontuario` simula o sistema transacional de um hospital (schema `clinico`, tabelas `pacientes` e `atendimentos`). Com o gerador ligado, ele recebe operações reais: cadastros, agendamentos, mudanças de situação, atualização de contato e eliminação de titulares a pedido (LGPD).
+
+| Etapa | Como funciona |
+|---|---|
+| Captura | O **Debezium** lê o log de transações (WAL) por replicação lógica (`pgoutput`), com o usuário da aplicação e TLS. A publicação `dbz_prontuario` restringe a captura às duas tabelas do prontuário |
+| Transporte | Um tópico por tabela (`prontuario.clinico.pacientes` e `prontuario.clinico.atendimentos`), com o envelope do Debezium: estado anterior, estado novo, operação e posição no log (LSN) |
+| Segredos | A senha do banco não aparece na configuração do conector: `${env:OLTP_DB_PASSWORD}` é resolvida pelo Kafka Connect em tempo de execução |
+| Processamento | Segunda query de streaming da speed layer (lotes de 60 s): bronze com os eventos brutos e silver como **espelho pseudonimizado**, atualizado por `MERGE` apenas com a mudança mais recente de cada chave |
+| Integração | O CPF vira o mesmo pseudônimo usado nos eventos de internação: as duas fontes se cruzam sem expor o dado pessoal |
+| Eliminação (LGPD) | Uma exclusão na origem remove o titular da silver (e, em cascata, seus atendimentos) e apaga da bronze os eventos com os dados pessoais dele. A remoção física dos arquivos ocorre no `VACUUM` do Delta Lake, após o período de retenção |
+| Serving | `gold.cdc_pacientes` e `gold.cdc_atendimentos`, exibidos no painel de tempo real do Metabase |
+
+O conector é registrado automaticamente pelo serviço `connect-init` a cada `make up`. A verificação de ponta a ponta (`make smoke`, etapa 3c) insere um paciente de teste no prontuário e mede o tempo até a alteração chegar ao DW.
+
 ### Batch layer: SRAG (OpenDataSUS) e municípios (IBGE)
 
 A DAG `batch_srag` roda semanalmente (terças, às 6h) e integra duas fontes públicas:
@@ -188,6 +206,7 @@ Resultado da carga de 2024 a 2026 (disco de dados em HD mecânico, 2 núcleos pa
 
 ### Limitações conhecidas
 
+- **Dados pessoais nos tópicos do CDC:** os eventos do Debezium carregam o registro completo da origem e ficam no Kafka pelo período de retenção (7 dias). O acesso é controlado pela autenticação da interface e pelo mascaramento de campos; em produção, somam-se SASL/ACLs no Kafka ou a pseudonimização já no conector (transformações do Kafka Connect).
 - **Gravações concorrentes no Delta Lake sobre S3:** o object storage não oferece a operação atômica "gravar somente se não existir" de que o log de transações do Delta precisa. Por isso, duas aplicações Spark gravando **na mesma tabela** ao mesmo tempo podem falhar. No projeto, cada tabela tem um único gravador (a speed layer ou o job em lote correspondente), as DAGs usam `max_active_runs=1` e o smoke test grava em uma tabela exclusiva por execução. Em produção, a solução é um LogStore com coordenação externa (por exemplo, o baseado em DynamoDB na AWS) ou um formato com catálogo transacional, como o Apache Iceberg.
 
 ### Solução de problemas
