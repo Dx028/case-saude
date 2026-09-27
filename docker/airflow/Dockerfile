@@ -31,4 +31,6 @@ RUN pip install --no-cache-dir \
       "apache-airflow==${AIRFLOW_VERSION}" \
       "apache-airflow-providers-apache-spark==6.3.2" \
       "pyspark-client==4.1.2" \
-      "statsd"
+      "statsd" \
+      "apache-airflow-providers-amazon" \
+      "apache-airflow-providers-postgres"

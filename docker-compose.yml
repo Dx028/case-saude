@@ -13,7 +13,7 @@ x-spark-common: &spark-common
     dockerfile: spark/Dockerfile
   image: case-saude/spark:4.1.2
   profiles: ["processing"]
-  restart: unless-stopped
+  restart: on-failure
   environment: &spark-env
     # Usuário de serviço do pipeline (política por camada), não o root do Silo
     AWS_ACCESS_KEY_ID: svc-pipeline
@@ -32,7 +32,7 @@ x-airflow-common: &airflow-common
     dockerfile: airflow/Dockerfile
   image: case-saude/airflow:3.3.2
   profiles: ["orchestration"]
-  restart: unless-stopped
+  restart: on-failure
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
@@ -40,6 +40,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # Disco mecânico: a primeira importação das DAGs (com o provider do Spark) pode passar de 30 s
+    AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "120"
+    AIRFLOW__DAG_PROCESSOR__DAG_FILE_PROCESSOR_TIMEOUT: "180"
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
     AIRFLOW__API_AUTH__JWT_ISSUER: case-saude
@@ -51,6 +54,12 @@ x-airflow-common: &airflow-common
     AIRFLOW__METRICS__STATSD_PREFIX: airflow
     # Conexão com o cluster Spark (client mode: driver no Airflow)
     AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077, "extra": {"deploy-mode": "client"}}'
+    # DW (PostgreSQL com TLS obrigatório), usado pelas DAGs para controle e dimensões
+    AIRFLOW_CONN_DW: '{"conn_type": "postgres", "host": "postgres", "port": 5432, "schema": "dw", "login": "dw_owner", "password": "${DW_DB_PASSWORD}", "extra": {"sslmode": "require"}}'
+    # Silo com o usuário de ingestão: só pode GRAVAR na landing (menor privilégio)
+    AIRFLOW_CONN_SILO_INGESTAO: '{"conn_type": "aws", "login": "svc-ingestao", "password": "${SILO_INGESTAO_SECRET}", "extra": {"endpoint_url": "http://silo:9000", "region_name": "us-east-1", "config_kwargs": {"s3": {"addressing_style": "path"}}}}'
+    # Anos do SRAG carregados pela batch layer
+    SRAG_ANOS: ${SRAG_ANOS:-2024,2025,2026}
   volumes:
     - ./dags:/opt/airflow/dags:ro
     - ./jobs:/opt/jobs:ro
@@ -71,7 +80,7 @@ services:
   postgres:
     image: postgres:17
     profiles: ["core"]
-    restart: unless-stopped
+    restart: on-failure
     # Instala o certificado com as permissões exigidas e chama o entrypoint oficial
     entrypoint: ["/bin/bash", "/scripts/postgres-entrypoint.sh"]
     command:
@@ -137,7 +146,7 @@ services:
   silo:
     image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
     profiles: ["core"]
-    restart: unless-stopped
+    restart: on-failure
     command: ["minio", "server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -214,7 +223,7 @@ services:
   kafka:
     image: apache/kafka:4.2.1
     profiles: ["stream"]
-    restart: unless-stopped
+    restart: on-failure
     hostname: kafka
     environment:
       CLUSTER_ID: Q2FzZVNhdWRlS2Fma2EwMQ
@@ -272,7 +281,7 @@ services:
   kafka-connect:
     image: quay.io/debezium/connect:3.5.2.Final
     profiles: ["stream"]
-    restart: unless-stopped
+    restart: on-failure
     depends_on:
       kafka:
         condition: service_healthy
@@ -309,7 +318,7 @@ services:
   kafka-ui:
     image: kafbat/kafka-ui:v1.3.0
     profiles: ["stream"]
-    restart: unless-stopped
+    restart: on-failure
     depends_on:
       kafka:
         condition: service_healthy
@@ -465,7 +474,7 @@ services:
   statsd-exporter:
     image: prom/statsd-exporter:v0.31.0
     profiles: ["orchestration"]
-    restart: unless-stopped
+    restart: on-failure
     command: ["--statsd.mapping-config=/etc/statsd/mapping.yml"]
     volumes:
       - ./config/statsd:/etc/statsd:ro
@@ -503,7 +512,7 @@ services:
   metabase:
     image: metabase/metabase:v0.58.31.x
     profiles: ["bi"]
-    restart: unless-stopped
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
@@ -539,7 +548,7 @@ services:
   prometheus:
     image: prom/prometheus:v3.14.0
     profiles: ["observability"]
-    restart: unless-stopped
+    restart: on-failure
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -565,7 +574,7 @@ services:
   grafana:
     image: grafana/grafana:13.2.2
     profiles: ["observability"]
-    restart: unless-stopped
+    restart: on-failure
     depends_on:
       prometheus:
         condition: service_healthy
@@ -599,7 +608,7 @@ services:
   loki:
     image: grafana/loki:3.7.8
     profiles: ["observability"]
-    restart: unless-stopped
+    restart: on-failure
     command: ["-config.file=/etc/loki/loki.yml"]
     volumes:
       - ./config/loki:/etc/loki:ro
@@ -615,7 +624,7 @@ services:
   alloy:
     image: grafana/alloy:v1.19.2
     profiles: ["observability"]
-    restart: unless-stopped
+    restart: on-failure
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -639,7 +648,7 @@ services:
   cadvisor:
     image: ghcr.io/google/cadvisor:v0.60.6
     profiles: ["observability"]
-    restart: unless-stopped
+    restart: on-failure
     privileged: true
     devices:
       - /dev/kmsg
@@ -665,7 +674,7 @@ services:
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.10.0
     profiles: ["observability"]
-    restart: unless-stopped
+    restart: on-failure
     command: ["--kafka.server=kafka:9092", "--kafka.version=3.6.0"]
     deploy:
       resources:
@@ -678,7 +687,7 @@ services:
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
     profiles: ["observability"]
-    restart: unless-stopped
+    restart: on-failure
     environment:
       DATA_SOURCE_URI: postgres:5432/postgres?sslmode=require
       DATA_SOURCE_USER: monitoring
@@ -771,7 +780,7 @@ services:
       context: ./generator
     image: case-saude/gerador:1.0
     profiles: ["simulation"]
-    restart: unless-stopped
+    restart: on-failure
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       EVENTOS_POR_SEGUNDO: ${GERADOR_EVENTOS_POR_SEGUNDO}

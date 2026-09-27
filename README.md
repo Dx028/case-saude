@@ -1,6 +1,6 @@
 # Case de Engenharia de Dados — Plataforma de Dados de Saúde
 
-> **Status:** ambiente completo e verificado (`make smoke`); speed layer em funcionamento. Batch layer, CDC e modelo dimensional em desenvolvimento.
+> **Status:** ambiente completo e verificado (`make smoke`); speed layer e batch layer em funcionamento. CDC e painéis do BI em desenvolvimento.
 
 Plataforma de dados para o domínio de saúde, construída inteiramente com ferramentas open source e executada em Docker. A solução segue uma arquitetura Lambda sobre um lakehouse (camadas bronze, silver e gold), com ingestão em lote e em tempo real, observabilidade de ponta a ponta e controles de segurança alinhados à LGPD.
 
@@ -101,6 +101,9 @@ As senhas ficam no arquivo `.env`. Exemplo: `grep GRAFANA_ADMIN_PASSWORD .env`.
 | `make gerador-start taxa=200` | Liga o gerador de eventos simulados (vazão em eventos/s) |
 | `make gerador-stop` | Desliga o gerador |
 | `make speed-logs` / `make gerador-logs` | Logs da speed layer / do gerador |
+| `make batch-srag` | Dispara a batch layer do SRAG (OpenDataSUS e IBGE) |
+| `make batch-status` | Situação das cargas e resultado das verificações de qualidade |
+| `make batch-reprocessar` | Reprocessa o SRAG a partir da landing, sem novo download (idempotente) |
 | `make test` | Testes automatizados das transformações e do mascaramento |
 | `make scale-workers n=3` | Ajusta o número de workers Spark (escala horizontal) |
 | `make targets` / `make alerts` | Alvos coletados e alertas ativos no Prometheus |
@@ -150,6 +153,27 @@ O intervalo de 30 segundos foi definido por medição: com lotes de 10 segundos,
 
 As gravações nas tabelas Delta são idempotentes por micro-batch: um reprocessamento após falha não gera duplicatas. No Metabase, as views `vw_alertas_clinicos` (com a latência de cada alerta) e `vw_ocupacao_por_uf` ficam disponíveis após sincronizar o esquema do banco.
 
+### Batch layer: SRAG (OpenDataSUS) e municípios (IBGE)
+
+A DAG `batch_srag` roda semanalmente (terças, às 6h) e integra duas fontes públicas:
+
+| Fonte | Formato | Conteúdo |
+|---|---|---|
+| OpenDataSUS — SRAG 2019 a 2026 (SIVEP-Gripe) | CSV (≈ 300 MB por ano, 194 colunas) | Notificações de síndrome respiratória aguda grave |
+| IBGE — API de Localidades | JSON | Cadastro dos 5.571 municípios brasileiros |
+
+Etapas e decisões:
+
+1. **Descoberta:** os nomes dos arquivos mudam a cada atualização semanal (ex.: `INFLUD25-14-09-2026.csv`). A DAG lê a página do conjunto de dados e escolhe o recorte mais recente de cada ano.
+2. **Carga incremental:** a versão de cada arquivo (`Last-Modified`) é registrada em `auditoria.controle_ingestao`; só o que mudou é baixado e processado.
+3. **Landing:** download em streaming direto para o object storage, com o usuário `svc-ingestao`, que só tem permissão de gravar na landing.
+4. **Bronze:** as 194 colunas originais, como texto, em Delta Lake particionado por ano.
+5. **Silver:** tipagem, tradução dos códigos do dicionário de dados, deduplicação e **minimização (LGPD)**: mesmo sendo dados abertos, a data de nascimento é descartada (fica a faixa etária) e o número da notificação é pseudonimizado. Os códigos de município do Distrito Federal são padronizados: o SIVEP-Gripe registra as Regiões Administrativas (Ceilândia, Taguatinga etc.) com códigos próprios, inexistentes no IBGE, onde o DF tem um único município (Brasília). A verificação de integridade referencial da gold detectou o problema (cerca de 3% dos casos sem município correspondente), e os códigos passaram a ser mapeados para Brasília, preservando o original em `municipio_residencia_sivep`.
+6. **Portão de qualidade:** regras críticas e de alerta, gravadas em `qualidade.verificacao`. Se uma regra crítica falhar, a silver daquele ano **não é publicada** e o arquivo fica pendente para a próxima execução.
+7. **Gold:** a fato `gold.fato_srag_semanal` é recalculada a partir de toda a silver (princípio da camada batch na arquitetura Lambda), com a dimensão `gold.dim_municipio` e as views `vw_srag_semanal_uf` e `vw_srag_municipio`.
+
+Os anos carregados são definidos pela variável `SRAG_ANOS` (padrão: 2024 a 2026).
+
 ### Limitações conhecidas
 
 - **Gravações concorrentes no Delta Lake sobre S3:** o object storage não oferece a operação atômica "gravar somente se não existir" de que o log de transações do Delta precisa. Por isso, duas aplicações Spark gravando **na mesma tabela** ao mesmo tempo podem falhar. No projeto, cada tabela tem um único gravador (a speed layer ou o job em lote correspondente), as DAGs usam `max_active_runs=1` e o smoke test grava em uma tabela exclusiva por execução. Em produção, a solução é um LogStore com coordenação externa (por exemplo, o baseado em DynamoDB na AWS) ou um formato com catálogo transacional, como o Apache Iceberg.
@@ -163,6 +187,7 @@ As gravações nas tabelas Delta são idempotentes por micro-batch: um reprocess
 | Scripts falham com `\r: command not found` | Quebras de linha do Windows: `git config --global core.autocrlf input` e clone novamente |
 | Containers reiniciando ou jobs interrompidos | Memória insuficiente: aumente o limite no `.wslconfig` ou suba menos profiles |
 | Metabase: `pg_hba.conf rejects connection ... no encryption` | SSL desativado na conexão do DW: ative-o com o modo `require` |
+| Após religar a máquina, serviço falha com `No such file or directory` em arquivo de configuração | O container foi montado antes de o WSL estar ativo: `docker compose up -d --force-recreate <serviço>`. Os serviços usam `restart: on-failure` justamente para não religarem sozinhos no boot; a rotina é abrir o Docker Desktop, abrir o Ubuntu e rodar `make up` |
 | Container com `Exited (127)` depois de reiniciar o Docker | Montagem desatualizada: `docker compose up -d --force-recreate <serviço>` |
 | Comandos `docker` travados, sem resposta | Docker Desktop sobrecarregado: `timeout 20 docker info`; se não responder, reinicie o Docker Desktop e rode `wsl --shutdown` |
 | Senha do administrador do Metabase perdida | `docker compose exec metabase java -jar /app/metabase.jar reset-password <email>` e acesse o link com o token gerado |

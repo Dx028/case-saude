@@ -5,7 +5,7 @@ COMPOSE := docker compose
 # Profiles do .env + "simulation" (o gerador). A opção --profile substituiria a lista do .env.
 COMPOSE_SIM := COMPOSE_PROFILES=$(shell grep ^COMPOSE_PROFILES= .env 2>/dev/null | cut -d= -f2),simulation docker compose
 
-.PHONY: help setup check env certs smoke smoke-rapido test gerador-start gerador-stop gerador-logs speed-logs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
+.PHONY: help setup check env certs smoke smoke-rapido test batch-srag batch-status batch-reprocessar gerador-start gerador-stop gerador-logs speed-logs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
 
 help: ## Lista os comandos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -90,7 +90,21 @@ clean: ## Remove containers E volumes (apaga os dados!)
 	@read -p "Isso apaga TODOS os dados do projeto. Confirmar? [s/N] " r; [[ $$r == s ]] && $(COMPOSE_SIM) down -v --remove-orphans || echo "Cancelado."
 
 test: ## Roda os testes automatizados (Spark local, sem dependências externas)
-	$(COMPOSE) exec -e PII_HMAC_KEY=chave-de-teste spark-master /opt/spark/bin/spark-submit --master 'local[2]' --driver-memory 512m /opt/tests/test_speed_layer.py
+	$(COMPOSE) exec -e PII_HMAC_KEY=chave-de-teste spark-master /opt/spark/bin/spark-submit --master 'local[2]' --driver-memory 768m /opt/tests/run_tests.py
+
+batch-srag: ## Dispara a batch layer do SRAG (OpenDataSUS -> landing -> bronze -> silver -> gold)
+	$(COMPOSE) exec airflow-scheduler airflow dags unpause batch_srag
+	$(COMPOSE) exec airflow-scheduler airflow dags trigger batch_srag
+
+batch-reprocessar: ## Reprocessa o SRAG a partir da landing (bronze, silver e gold), sem novo download
+	@$(COMPOSE) exec -T postgres psql -U $$(grep ^POSTGRES_USER= .env | cut -d= -f2) -d dw -c \
+	  "UPDATE auditoria.controle_ingestao SET status = 'baixado', atualizado_em = now() WHERE fonte = 'srag' AND status = 'processado';"
+	$(COMPOSE) exec airflow-scheduler airflow dags trigger batch_srag
+
+batch-status: ## Situação das cargas do SRAG e das últimas verificações de qualidade
+	@$(COMPOSE) exec -T postgres psql -U $$(grep ^POSTGRES_USER= .env | cut -d= -f2) -d dw -c \
+	  "SELECT ano, arquivo, status, round(tamanho_bytes / 1e6) AS mb, linhas_silver, to_char(atualizado_em, 'DD/MM HH24:MI') AS atualizado FROM auditoria.controle_ingestao ORDER BY ano, atualizado_em;" -c \
+	  "SELECT coalesce(ano::text, '-') AS ano, regra, severidade, valor, limite, CASE WHEN aprovado THEN 'OK' ELSE 'FALHA' END AS resultado FROM qualidade.vw_ultima_verificacao ORDER BY tabela DESC, ano, regra;"
 
 gerador-start: ## Liga o gerador de eventos (uso: make gerador-start taxa=200)
 	GERADOR_EVENTOS_POR_SEGUNDO=$(or $(taxa),$$(grep ^GERADOR_EVENTOS_POR_SEGUNDO= .env | cut -d= -f2)) $(COMPOSE_SIM) up -d --build gerador
