@@ -1,6 +1,6 @@
 # Imagem Spark do projeto: Spark oficial + Delta Lake + conectores
 # (build context: ./docker)
-ARG SPARK_IMAGE=spark:4.1.2-scala2.13-java17-python3-ubuntu
+ARG SPARK_IMAGE=spark:4.1.3-scala2.13-java17-python3-ubuntu
 FROM ${SPARK_IMAGE}
 
 USER root

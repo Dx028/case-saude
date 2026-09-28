@@ -316,6 +316,18 @@ def criar_painel(mb, banco_id, colecao_id, painel):
     return painel_id
 
 
+def gravar_links_do_portal(mb, painel_ids, colecao_id):
+    """O portal lê este arquivo para listar os painéis (os IDs mudam a cada recriação)."""
+    pasta = os.path.join(RAIZ, "data", "portal")
+    os.makedirs(pasta, exist_ok=True)
+    descricoes = {1: "Casos, óbitos, UTI e curva epidêmica do SRAG", 2: "Internações, alertas clínicos e prontuário agora",
+                  3: "Histórico do ano e situação atual, lado a lado", 4: "Regras de qualidade e controle das cargas"}
+    paineis = [{"nome": nome.split(" (")[0], "descricao": descricoes.get(i), "url": f"{mb.url}/dashboard/{pid}"}
+               for i, (nome, pid) in enumerate(painel_ids, start=1)]
+    with open(os.path.join(pasta, "paineis.json"), "w", encoding="utf-8") as f:
+        json.dump({"colecao": f"{mb.url}/collection/{colecao_id}", "paineis": paineis}, f, ensure_ascii=False, indent=2)
+
+
 def main():
     env = ler_env()
     mb = Metabase(f"http://localhost:{env.get('METABASE_PORT', '3000')}")
@@ -333,11 +345,14 @@ def main():
     autenticar(mb, env)
     banco_id = garantir_banco(mb, env)
     colecao_id = garantir_colecao(mb)
+    criados = []
     for painel in PAINEIS:
         painel_id = criar_painel(mb, banco_id, colecao_id, painel)
+        criados.append((painel["nome"], painel_id))
         perguntas = sum(1 for item, *_ in painel["itens"] if "sql" in item)
         print(f"[metabase] painel '{painel['nome']}' criado com {perguntas} pergunta(s): {mb.url}/dashboard/{painel_id}")
-    print(f"[metabase] pronto: coleção '{COLECAO}' em {mb.url}/collection/{colecao_id}")
+    gravar_links_do_portal(mb, criados, colecao_id)
+    print(f"[metabase] pronto: coleção '{COLECAO}' em {mb.url}/collection/{colecao_id} (links enviados ao portal)")
 
 
 if __name__ == "__main__":

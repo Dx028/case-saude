@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plataforma de Dados de Saúde</title>
+<style>
+  :root {
+    --tinta: #17233b;
+    --tinta-suave: #56637a;
+    --fundo: #f3f5f8;
+    --superficie: #ffffff;
+    --linha: #c9d2dc;
+    --ok: #0b7a5e;
+    --atencao: #9a5b00;
+    --falha: #b3261e;
+    --link: #1d5fa8;
+    --raio: 6px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--fundo);
+    color: var(--tinta);
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: 1rem;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+  }
+  a { color: var(--link); text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; border-radius: 2px; }
+  .pagina { max-width: 1180px; margin: 0 auto; padding: 2rem 1.5rem 3rem; }
+
+  /* Situação geral: a primeira coisa que o usuário lê */
+  .marca { margin: 0 0 1.25rem; color: var(--tinta-suave); font-size: 0.9375rem; }
+  .situacao { display: flex; gap: 1rem; align-items: flex-start; padding-bottom: 1.75rem; }
+  .situacao svg { flex: none; width: 2.5rem; height: 2.5rem; margin-top: 0.125rem; }
+  .situacao h1 { margin: 0; font-size: 2rem; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; }
+  .problemas { margin: 0.625rem 0 0; padding: 0; list-style: none; }
+  .problemas li { margin: 0.25rem 0; padding-left: 1rem; position: relative; }
+  .problemas li::before { content: ""; position: absolute; left: 0; top: 0.6em; width: 0.4rem; height: 0.4rem; border-radius: 50%; background: currentColor; }
+  .problemas .falha { color: var(--falha); }
+  .problemas .atencao { color: var(--atencao); }
+  .atualizado { margin: 0.5rem 0 0; color: var(--tinta-suave); font-size: 0.875rem; }
+
+  .grade { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 2.5rem 3rem; }
+  section h2 { margin: 0 0 0.25rem; font-size: 1.25rem; font-weight: 600; }
+  section h3 { margin: 1.75rem 0 0.5rem; font-size: 1rem; font-weight: 600; }
+  .resumo { margin: 0 0 1.5rem; color: var(--tinta-suave); max-width: 70ch; }
+  .resumo strong { color: var(--tinta); font-weight: 600; }
+
+  /* A carga como uma linha com estações: o elemento marcante da página */
+  .linha { list-style: none; margin: 0 0 1.75rem; padding: 0; display: grid; grid-template-columns: repeat(7, 1fr); position: relative; }
+  .linha::before { content: ""; position: absolute; left: calc(100% / 14); right: calc(100% / 14); top: 0.8rem; height: 4px; background: var(--linha); border-radius: 2px; }
+  .estacao { position: relative; text-align: center; padding: 0 0.25rem; }
+  .estacao .ponto { position: relative; z-index: 1; display: grid; place-items: center; width: 1.9rem; height: 1.9rem; margin: -0.15rem auto 0.6rem; border-radius: 50%; background: var(--superficie); border: 3px solid var(--linha); color: #fff; font-size: 0.8rem; font-weight: 700; }
+  .estacao .nome { display: block; font-size: 0.875rem; line-height: 1.3; }
+  .estacao .detalhe { display: block; font-size: 0.8125rem; color: var(--tinta-suave); margin-top: 0.15rem; }
+  .estacao.concluida .ponto { background: var(--ok); border-color: var(--ok); }
+  .estacao.falhou .ponto { background: var(--falha); border-color: var(--falha); }
+  .estacao.falhou .nome { color: var(--falha); font-weight: 600; }
+  .estacao.atual .ponto { border-color: var(--link); background: var(--superficie); color: var(--link); }
+  .estacao.atual .ponto::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; border: 2px solid var(--link); animation: pulso 1.8s ease-out infinite; }
+  .estacao.atual .nome { font-weight: 600; }
+  .estacao.dispensada .ponto { border-style: dashed; }
+  .estacao.nao-executada .ponto { border-color: var(--falha); border-style: dashed; }
+  @keyframes pulso { from { opacity: 0.9; transform: scale(0.85); } to { opacity: 0; transform: scale(1.35); } }
+  @media (prefers-reduced-motion: reduce) { .estacao.atual .ponto::after { animation: none; opacity: 0.6; } }
+
+  .erro { background: #fbeeed; border-left: 4px solid var(--falha); padding: 1rem 1.25rem; border-radius: 0 var(--raio) var(--raio) 0; margin: 0 0 1.75rem; }
+  .erro p { margin: 0 0 0.5rem; }
+  .erro pre { margin: 0.5rem 0 0.75rem; padding: 0.75rem; background: var(--superficie); border-radius: var(--raio); overflow-x: auto; font-size: 0.8125rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 16rem; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+  th { text-align: left; font-weight: 600; color: var(--tinta-suave); font-size: 0.875rem; padding: 0 0.75rem 0.4rem 0; }
+  td { padding: 0.55rem 0.75rem 0.55rem 0; border-top: 1px solid #dfe4ea; vertical-align: top; }
+  td.numero, th.numero { text-align: right; }
+  .selo { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 600; }
+  .selo::before { content: ""; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: currentColor; }
+  .selo.ok { color: var(--ok); } .selo.atencao { color: var(--atencao); } .selo.falha { color: var(--falha); } .selo.neutro { color: var(--tinta-suave); }
+  .nota { color: var(--tinta-suave); font-size: 0.875rem; margin: 0.75rem 0 0; }
+
+  /* Tempo real */
+  .fluxo { padding: 1rem 0; border-top: 1px solid #dfe4ea; }
+  .fluxo:first-of-type { border-top: 0; padding-top: 0.5rem; }
+  .fluxo h3 { margin: 0 0 0.35rem; }
+  .fluxo dl { margin: 0.5rem 0 0; display: grid; grid-template-columns: auto 1fr; gap: 0.2rem 1rem; font-size: 0.9375rem; }
+  .fluxo dt { color: var(--tinta-suave); }
+  .fluxo dd { margin: 0; }
+
+  .links { list-style: none; margin: 0; padding: 0; }
+  .links li { padding: 0.45rem 0; }
+  .links a { font-weight: 600; }
+  .links span { display: block; color: var(--tinta-suave); font-size: 0.875rem; }
+  .lateral > section + section { margin-top: 2.5rem; }
+
+  @media (max-width: 900px) {
+    .grade { grid-template-columns: 1fr; }
+    .linha { grid-template-columns: 1fr; gap: 0.9rem; }
+    .linha::before { left: 0.9rem; right: auto; top: 0.8rem; bottom: 0.8rem; width: 4px; height: auto; }
+    .estacao { display: grid; grid-template-columns: 1.9rem 1fr; column-gap: 0.9rem; text-align: left; padding: 0; }
+    .estacao .ponto { margin: 0; grid-row: span 2; }
+    .situacao h1 { font-size: 1.625rem; }
+  }
+</style>
+</head>
+<body>
+<div class="pagina">
+  <p class="marca">Plataforma de Dados de Saúde</p>
+  <header class="situacao" id="situacao" role="status" aria-live="polite">
+    <div><h1>Consultando a plataforma…</h1></div>
+  </header>
+
+  <main class="grade">
+    <section aria-labelledby="t-carga">
+      <h2 id="t-carga">Carga semanal do SRAG</h2>
+      <div id="carga"><p class="resumo">Carregando…</p></div>
+    </section>
+
+    <div class="lateral">
+      <section aria-labelledby="t-tempo">
+        <h2 id="t-tempo">Tempo real</h2>
+        <div id="tempo-real"></div>
+      </section>
+      <section aria-labelledby="t-resultados">
+        <h2 id="t-resultados">Onde ver os resultados</h2>
+        <div id="resultados"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+const INTERVALO = 15000;
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const num = (v) => (v == null ? "—" : Number(v).toLocaleString("pt-BR"));
+const hora = (iso) => (iso ? new Date(iso).toLocaleTimeString("pt-BR") : "—");
+const dataHora = (iso) => (iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
+
+function ha(iso) {
+  if (!iso) return "sem registro";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  if (s < 60) return `há ${s} s`;
+  if (s < 3600) return `há ${Math.round(s / 60)} min`;
+  if (s < 86400) return `há ${Math.round(s / 3600)} h`;
+  return `em ${dataHora(iso)}`;
+}
+function duracao(s) {
+  if (s == null) return "—";
+  if (s < 60) return `${s} s`;
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h ? `${h} h ${String(m).padStart(2, "0")} min` : `${m} min`;
+}
+
+const ICONES = {
+  ok: '<svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" fill="#0b7a5e"/><path d="M12 20.5l5.5 5.5L28.5 15" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  atencao: '<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3L38 35H2z" fill="#9a5b00"/><path d="M20 14v10" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/><circle cx="20" cy="29.5" r="2.2" fill="#fff"/></svg>',
+  falha: '<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M13 2h14l11 11v14L27 38H13L2 27V13z" fill="#b3261e"/><path d="M14 14l12 12M26 14L14 26" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/></svg>',
+};
+
+function renderSituacao(s, geradoEm) {
+  const problemas = s.problemas.length
+    ? `<ul class="problemas">${s.problemas.map((p) => `<li class="${p.gravidade}">${esc(p.texto)}</li>`).join("")}</ul>` : "";
+  document.getElementById("situacao").innerHTML = `${ICONES[s.nivel]}
+    <div><h1>${esc(s.titulo)}</h1>${problemas}
+    <p class="atualizado">Atualizado às ${hora(geradoEm)}. A página se atualiza sozinha.</p></div>`;
+}
+
+const ESTADO_ETAPA = {
+  success: ["concluida", "Concluída"], failed: ["falhou", "Falhou"], running: ["atual", "Em andamento"],
+  up_for_retry: ["atual", "Nova tentativa em breve"], queued: ["atual", "Na fila"], scheduled: ["atual", "Na fila"],
+  deferred: ["atual", "Aguardando"], restarting: ["atual", "Reiniciando"],
+  skipped: ["dispensada", "Dispensada"], upstream_failed: ["nao-executada", "Não executada"],
+};
+
+function renderCarga(c) {
+  const alvo = document.getElementById("carga");
+  if (!c) { alvo.innerHTML = '<p class="resumo">Não foi possível consultar o Airflow. Verifique se ele está no ar em "Detalhes técnicos".</p>'; return; }
+  if (!c.estado) {
+    alvo.innerHTML = `<p class="resumo">Nenhuma carga executada ainda. Para iniciar, rode <strong>make batch-srag</strong> no terminal.</p>`;
+    return;
+  }
+  const semNovidade = c.estado === "success" && c.etapas.find((e) => e.tarefa === "bronze_silver")?.estado === "skipped";
+  const frase = {
+    success: semNovidade ? `<strong>Concluída sem novidades</strong>: nenhum arquivo mudou desde a última carga.`
+                         : `<strong>Concluída</strong> em ${duracao(c.duracao_s)}.`,
+    running: `<strong>Em andamento</strong> há ${duracao(c.duracao_s)}.`,
+    queued: `<strong>Na fila</strong>, aguardando para começar.`,
+    failed: `<strong>Falhou</strong> depois de ${duracao(c.duracao_s)}. Veja abaixo onde e por quê.`,
+  }[c.estado] || `<strong>${esc(c.estado_texto)}</strong>.`;
+  const proxima = c.pausada ? "O agendamento semanal está pausado." : (c.proxima ? `Próxima execução agendada para ${dataHora(c.proxima)}.` : "");
+
+  const estacoes = c.etapas.map((e, i) => {
+    const [classe, texto] = ESTADO_ETAPA[e.estado] || ["pendente", "Aguardando"];
+    const marca = classe === "concluida" ? "✓" : classe === "falhou" ? "✕" : "";
+    const qtd = e.instancias > 1 ? ` (${e.instancias})` : "";
+    return `<li class="estacao ${classe}"><span class="ponto" aria-hidden="true">${marca}</span>
+      <span class="nome">${i + 1}. ${esc(e.nome)}</span><span class="detalhe">${texto}${qtd}</span></li>`;
+  }).join("");
+
+  const erro = c.falha ? `<div class="erro" role="alert">
+      <p><strong>A etapa "${esc(c.falha.etapa)}" falhou.</strong> Trecho do registro da execução:</p>
+      ${c.falha.trecho ? `<pre>${esc(c.falha.trecho)}</pre>` : "<p>O registro não pôde ser lido pelo portal.</p>"}
+      <a href="${esc(c.falha.link)}" target="_blank" rel="noopener">Abrir o registro completo no Airflow</a></div>` : "";
+
+  const statusAno = { processado: ["ok", "Carregado"], baixado: ["atencao", "Aguardando processamento"], falhou: ["falha", "Falhou"] };
+  const anos = (c.anos || []).length ? `<h3>Arquivos por ano</h3>
+    <table><thead><tr><th>Ano</th><th>Situação</th><th class="numero">Notificações</th><th class="numero">Tamanho</th><th>Atualizado</th></tr></thead>
+    <tbody>${c.anos.map((a) => { const [cl, tx] = statusAno[a.status] || ["neutro", a.status];
+      return `<tr><td>${a.ano}</td><td><span class="selo ${cl}">${tx}</span></td><td class="numero">${num(a.notificacoes)}</td>
+      <td class="numero">${num(a.mb)} MB</td><td>${dataHora(a.atualizado_em)}</td></tr>`; }).join("")}</tbody></table>` : "";
+
+  const q = c.qualidade;
+  const qualidade = q ? `<h3>Qualidade dos dados</h3>
+    <p>${q.falhas.length ? `<span class="selo atencao">${q.aprovadas} de ${q.total} regras aprovadas</span>`
+                          : `<span class="selo ok">${q.aprovadas} de ${q.total} regras aprovadas</span>`}</p>
+    ${q.falhas.length ? `<table><thead><tr><th>Regra</th><th>Ano</th><th class="numero">Valor</th><th class="numero">Limite</th></tr></thead><tbody>
+      ${q.falhas.map((f) => `<tr><td>${esc(f.regra)} <span class="selo ${f.severidade === "critica" ? "falha" : "atencao"}">${f.severidade === "critica" ? "crítica" : "alerta"}</span></td>
+      <td>${esc(f.ano)}</td><td class="numero">${num(f.valor)}</td><td class="numero">${num(f.limite)}</td></tr>`).join("")}</tbody></table>` : ""}` : "";
+
+  alvo.innerHTML = `<p class="resumo">Última execução (${c.tipo.toLowerCase()}, iniciada em ${dataHora(c.inicio)}): ${frase} ${proxima}</p>
+    <ol class="linha" aria-label="Etapas da carga">${estacoes}</ol>${erro}${anos}${qualidade}
+    <p class="nota"><a href="${esc(c.link_execucao)}" target="_blank" rel="noopener">Ver esta execução no Airflow</a></p>`;
+}
+
+function renderTempoReal(t) {
+  const s = t.speed || {}, c = t.cdc || {};
+  // Com o fluxo parado, as métricas guardam o último valor medido: mostrá-lo como atual enganaria
+  const atraso = (v, ativo) => (!ativo ? "Sem medição recente" : v == null ? "—" : v <= 0 ? "Em dia" : `${num(v)} mensagens na fila`);
+  const ritmo = (v, ativo) => (!ativo ? "Sem medição recente" : v == null ? "—" : `${num(Math.round(v))} eventos/s`);
+  let speedSelo;
+  if (s.ativo) speedSelo = '<span class="selo ok">Processando</span>';
+  else if (t.gerador_ligado === false) speedSelo = '<span class="selo neutro">Sem eventos: o gerador está desligado</span>';
+  else if (t.eventos_chegando_s === 0) speedSelo = '<span class="selo falha">Sem eventos chegando: o gerador está no ar, mas não publica</span>';
+  else speedSelo = '<span class="selo falha">Parado</span>';
+  const cdcSelo = c.conector === "RUNNING"
+    ? (c.ativo ? '<span class="selo ok">Capturando alterações</span>' : '<span class="selo ok">Conectado, sem alterações recentes</span>')
+    : `<span class="selo falha">Conector ${esc(c.conector || "indisponível")}</span>`;
+  document.getElementById("tempo-real").innerHTML = `
+    <div class="fluxo"><h3>Internações e alertas clínicos</h3>${speedSelo}
+      <dl><dt>Última atualização</dt><dd>${ha(s.ultimo)}</dd>
+          <dt>Fila</dt><dd>${atraso(s.atraso, s.ativo)}</dd>
+          <dt>Ritmo</dt><dd>${ritmo(s.entrada_s, s.ativo)}</dd></dl></div>
+    <div class="fluxo"><h3>Prontuário (CDC)</h3>${cdcSelo}
+      <dl><dt>Última atualização</dt><dd>${ha(c.ultimo)}</dd>
+          <dt>Pacientes no espelho</dt><dd>${num(c.pacientes)}</dd>
+          <dt>Titulares eliminados</dt><dd>${num(c.eliminados)}</dd></dl></div>`;
+}
+
+function renderLinks(l) {
+  const lista = (itens) => `<ul class="links">${itens.map((i) =>
+    `<li><a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.nome)}</a>${i.descricao ? `<span>${esc(i.descricao)}</span>` : ""}</li>`).join("")}</ul>`;
+  document.getElementById("resultados").innerHTML = `${lista(l.paineis)}<h3>Detalhes técnicos</h3>${lista(l.ferramentas)}`;
+}
+
+async function atualizar() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    renderSituacao(d.saude, d.gerado_em);
+    renderCarga(d.carga);
+    renderTempoReal(d.tempo_real);
+    renderLinks(d.links);
+  } catch (e) {
+    renderSituacao({ nivel: "falha", titulo: "O portal não conseguiu consultar a plataforma",
+      problemas: [{ texto: `Verifique se os serviços estão no ar (make ps) e recarregue a página. Detalhe: ${e.message}`, gravidade: "falha" }] }, new Date().toISOString());
+  }
+}
+atualizar();
+setInterval(atualizar, INTERVALO);
+</script>
+</body>
+</html>

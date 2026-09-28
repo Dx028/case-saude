@@ -33,3 +33,6 @@ derby.log
 .idea/
 .DS_Store
 Thumbs.db
+
+# Portal: links dos painéis gerados por make metabase
+data/portal/

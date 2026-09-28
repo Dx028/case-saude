@@ -73,6 +73,16 @@ groups:
 
   - name: speed_layer
     rules:
+      - alert: EventosNaoChegam
+        expr: |
+          sum(rate(kafka_topic_partition_current_offset{topic=~"saude\\.eventos\\.(admissoes|sinais-vitais)"}[5m])) == 0
+          and on() max(up{job="gerador"}) == 1
+        for: 5m
+        labels: { severidade: alta }
+        annotations:
+          resumo: "Nenhum evento chegando aos tópicos"
+          descricao: "O gerador está no ar, mas nenhuma mensagem chega aos tópicos de eventos há 5 minutos: a speed layer fica sem o que processar. Veja o log do gerador (docker logs case-saude-gerador-1)."
+
       - alert: CdcSemProgresso
         expr: |
           changes(spark_streaming_batch_id{query="cdc_prontuario"}[10m]) == 0
@@ -94,7 +104,7 @@ groups:
       - alert: SpeedLayerSemProgresso
         expr: |
           changes(spark_streaming_batch_id{query="speed_layer"}[5m]) == 0
-          and on() sum(rate(gerador_eventos_produzidos_total[5m])) > 0
+          and on() sum(rate(kafka_topic_partition_current_offset{topic=~"saude\\.eventos\\.(admissoes|sinais-vitais)"}[5m])) > 0
         for: 2m
         labels: { severidade: critica }
         annotations:

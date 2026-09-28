@@ -2,7 +2,7 @@
 # O driver dos jobs roda no Airflow (client mode) e os executores no cluster.
 # Python 3.10 = mesma versão dos workers Spark (exigência do PySpark).
 # (build context: ./docker)
-ARG SPARK_IMAGE=spark:4.1.2-scala2.13-java17-python3-ubuntu
+ARG SPARK_IMAGE=spark:4.1.3-scala2.13-java17-python3-ubuntu
 ARG AIRFLOW_IMAGE=apache/airflow:3.3.2-python3.10
 
 FROM ${SPARK_IMAGE} AS spark
@@ -30,7 +30,7 @@ USER airflow
 RUN pip install --no-cache-dir \
       "apache-airflow==${AIRFLOW_VERSION}" \
       "apache-airflow-providers-apache-spark==6.3.2" \
-      "pyspark-client==4.1.2" \
+      "pyspark-client==4.1.3" \
       "statsd" \
       "apache-airflow-providers-amazon" \
       "apache-airflow-providers-postgres"

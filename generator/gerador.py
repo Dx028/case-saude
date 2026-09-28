@@ -282,8 +282,20 @@ def main():
         from prontuario import SimuladorProntuario
         SimuladorProntuario(gerador, os.environ["PRONTUARIO_DSN"], ops_por_segundo, ops_prontuario).iniciar()
 
+    # Saúde do produtor: um produtor idempotente pode entrar num estado do qual não sai sozinho
+    # (por exemplo, depois de o broker ser recriado). Nesse caso, o gerador encerra com erro e a
+    # política restart: on-failure do Docker o reinicia com um produtor novo (fail fast).
+    saude = {"fatal": None, "ultima_entrega": time.monotonic()}
+    limite_sem_entrega = float(os.getenv("GERADOR_LIMITE_SEM_ENTREGA_S", "120"))
+
+    def erro_do_produtor(err):
+        if err.fatal():
+            saude["fatal"] = str(err)
+        log.warning("erro no produtor Kafka: %s", err)
+
     producer = Producer({
         "bootstrap.servers": os.getenv("KAFKA_BOOTSTRAP", "kafka:9092"),
+        "error_cb": erro_do_produtor,
         "client.id": "gerador-eventos-saude",
         "acks": "all",                 # confirmação de todas as réplicas em sincronia
         "enable.idempotence": True,    # sem duplicatas em caso de reenvio
@@ -297,6 +309,7 @@ def main():
                 erros.labels(topico).inc()
                 log.warning("falha na entrega (%s): %s", topico, err)
             else:
+                saude["ultima_entrega"] = time.monotonic()
                 latencia.observe(time.monotonic() - enviado_em)
         return _cb
 
@@ -340,6 +353,12 @@ def main():
             publicar(*gerador.proximo_evento(max_internacoes))
         producer.poll(0)
         ativas.set(len(gerador.ativas))
+        sem_entrega = time.monotonic() - saude["ultima_entrega"]
+        if saude["fatal"] or sem_entrega > limite_sem_entrega:
+            motivo = saude["fatal"] or f"nenhuma entrega confirmada há {sem_entrega:.0f} s"
+            log.error("produtor Kafka sem condições de entregar (%s): encerrando para reiniciar com "
+                      "um produtor novo", motivo)
+            return 1
         if time.monotonic() - ultimo_log > 30:
             log.info("internações ativas: %d", len(gerador.ativas))
             ultimo_log = time.monotonic()

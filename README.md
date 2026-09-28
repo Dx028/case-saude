@@ -2,7 +2,9 @@
 
 Plataforma de dados para o domínio de saúde, construída inteiramente com ferramentas open source e executada em Docker. A solução segue a **arquitetura Lambda** sobre um **lakehouse** (camadas landing, bronze, silver e gold), com ingestão em lote, em streaming e por CDC, observabilidade de ponta a ponta e controles de segurança e privacidade alinhados à **LGPD**.
 
-> **Status:** plataforma completa e verificada de ponta a ponta (`make smoke`): batch layer com dados reais do OpenDataSUS, speed layer, CDC do prontuário e painéis de BI em funcionamento.
+> **Status:** plataforma completa e verificada de ponta a ponta (`make smoke`): batch layer com dados reais do OpenDataSUS, speed layer, CDC do prontuário, painéis de BI e um portal de acompanhamento para o usuário.
+>
+> **Por onde começar:** depois de subir a plataforma, abra o **portal** em http://localhost:8090. Ele mostra se tudo está funcionando, em que etapa está a carga, onde houve erro e os links para os painéis e as ferramentas.
 
 **Sumário**
 
@@ -38,6 +40,7 @@ O domínio de saúde foi escolhido por reunir, de forma natural, os pontos centr
 | Quantos pacientes estão internados, em UTI e em estado grave agora? Quais alertas clínicos críticos surgiram nos últimos minutos? | Speed | Painel 2 — Operação hospitalar em tempo real |
 | Como a situação atual de cada UF se compara ao histórico do ano? | Serving (Lambda) | Painel 3 — Visão integrada |
 | Os dados carregados são confiáveis? De onde vieram e quando? | Governança | Painel 4 — Qualidade e ingestão |
+| A plataforma está funcionando? A carga terminou? Se falhou, onde e por quê? | Operação | Portal da plataforma |
 
 ### Fontes de dados
 
@@ -156,6 +159,7 @@ flowchart TB
     end
     subgraph BIP["bi"]
         MB["Metabase"]
+        PORTAL["Portal da plataforma"]
     end
     subgraph SIM["simulation"]
         GEN["gerador<br/>eventos + prontuário"]
@@ -179,6 +183,9 @@ flowchart TB
     SW --> SILO
     SW --> PG
     MB --> PG
+    PORTAL -.->|"somente leitura"| AFS
+    PORTAL -.-> PROM
+    PORTAL -.-> PG
     PROM --> EXP
     ALLOY --> LOKI
     GRAF --> PROM
@@ -194,10 +201,11 @@ Cada caixa externa é um **profile** do Docker Compose, o que permite subir apen
 | Apache Kafka | 4.2.1 (KRaft, sem ZooKeeper) | Barramento de eventos e transporte do CDC |
 | Kafka Connect + Debezium | 3.5.2 | Captura de mudanças no PostgreSQL por replicação lógica |
 | Kafbat UI | 1.3.0 | Inspeção de tópicos e mensagens, com mascaramento de campos |
-| Apache Spark | 4.1.2 | Processamento em lote e em streaming (imagem própria com os conectores) |
+| Apache Spark | 4.1.3 | Processamento em lote e em streaming (imagem própria com os conectores) |
 | Delta Lake | 4.4.0 | Formato transacional do lakehouse (ACID, `MERGE`, histórico de versões) |
 | Apache Airflow | 3.3.2 | Orquestração da camada batch |
 | Metabase | 0.58 | BI e painéis, criados como código pela API |
+| Portal da plataforma | FastAPI 0.141 | Página de acompanhamento para o usuário, somente leitura |
 | Prometheus, Grafana, Loki e Alloy | 3.14, 13.2, 3.7 e 1.19 | Métricas, painéis, logs e coleta de logs |
 
 ### II.4 Fluxos de dados
@@ -338,7 +346,7 @@ flowchart LR
         APPS["Speed layer, CDC e gerador<br/>(métricas próprias)"]
         LOGS["Logs de todos os containers"]
     end
-    PROM["Prometheus<br/>14 alvos · 12 alertas"]
+    PROM["Prometheus<br/>14 alvos · 13 alertas"]
     LOKI["Loki"]
     GRAF["Grafana<br/>painel provisionado"]
     SVC --> PROM
@@ -352,7 +360,7 @@ flowchart LR
 A estratégia cobre as três perguntas do requisito:
 
 - **Rastrear o fluxo de dados.** Cada registro da bronze carrega a origem (arquivo, ou tópico, partição e offset), e cada evento inválido na DLQ aponta para o registro correspondente. O controle de ingestão registra a versão de cada arquivo carregado. As métricas acompanham o fluxo em cada etapa: eventos gerados por segundo, mensagens por tópico, entrada e processamento de cada query de streaming, e operações no prontuário contra mudanças aplicadas pelo CDC.
-- **Detectar falhas.** São 12 regras de alerta no Prometheus: serviço indisponível, Spark sem workers, Kafka sem broker, *consumer lag* alto, memória alta em container, disco quase cheio, conexões em excesso no PostgreSQL, tarefa do Airflow com falha, speed layer atrasada ou sem progresso, CDC sem progresso e taxa alta de eventos inválidos. Os logs de todos os containers vão para o Loki, com um painel de erros por serviço.
+- **Detectar falhas.** São 13 regras de alerta no Prometheus: serviço indisponível, Spark sem workers, Kafka sem broker, *consumer lag* alto, memória alta em container, disco quase cheio, conexões em excesso no PostgreSQL, tarefa do Airflow com falha, eventos que deixam de chegar aos tópicos, speed layer atrasada ou sem progresso, CDC sem progresso e taxa alta de eventos inválidos. Os alertas apontam a causa, e não o sintoma em cascata: se os eventos param de chegar, dispara "Nenhum evento chegando aos tópicos", e não "Speed layer parada", porque a speed layer só é cobrada quando há eventos para processar. Os logs de todos os containers vão para o Loki, com um painel de erros por serviço.
 - **Identificar gargalos.** O painel "Plataforma de Dados — Visão Geral" tem sete seções: saúde dos serviços, recursos dos containers, streaming, speed layer, orquestração e processamento, armazenamento e CDC. Foi por ele, por exemplo, que o dimensionamento do intervalo da speed layer foi decidido (seção III.9).
 
 A plataforma também se verifica sozinha: o `make smoke` checa todos os containers e conexões e executa três fluxos reais de ponta a ponta (Airflow e Spark gravando no lakehouse e no DW, um evento chegando como alerta no DW e uma alteração no prontuário chegando pelo CDC), além dos 18 controles de segurança.
@@ -426,6 +434,7 @@ A fato é agregada: a notificação individual fica na silver, pseudonimizada, e
 | Speed layer com lotes de 30 s | 2 núcleos | Cerca de 13 s por lote e latência média de 28 s do evento ao alerta no DW, estável |
 | Speed layer e CDC na mesma aplicação | 2 núcleos | Latência de 69,7 s no teste de ponta a ponta |
 | Depois da escala horizontal | 3 workers (6 núcleos), 3 para o streaming e teto de 5 mil eventos por lote | Latência de 51 s no teste de ponta a ponta, com o atraso em zero |
+| Speed layer depois de cerca de dois dias sem compactação | 3 núcleos, teto de 5 mil eventos por lote | Cerca de 55 s por lote, com o atraso em zero: acompanha o fluxo, com latência maior (seção IV) |
 | CDC | Lotes de 60 s | Cerca de 5 a 8 s da alteração no prontuário ao DW, quando a mudança chega perto do disparo do lote |
 | Carga completa do SRAG | 2 núcleos | Cerca de 30 min para 921 MB e 816.655 notificações (15 min em bronze e silver, 7 min na gold) |
 
@@ -435,9 +444,28 @@ O dimensionamento do intervalo da speed layer mostra o raciocínio: o custo de c
 
 | Verificação | Comando | O que cobre |
 |---|---|---|
-| Testes automatizados | `make test` | 24 testes das transformações: 11 da speed layer (validação, pseudonimização, alertas, estado e DLQ), 8 da camada batch (tipagem, minimização, deduplicação, qualidade e municípios do DF) e 5 do CDC (envelope do Debezium, última mudança por chave e exclusão) |
+| Testes automatizados | `make test` | 28 testes: 11 da speed layer (validação, pseudonimização, alertas, estado e DLQ), 8 da camada batch (tipagem, minimização, deduplicação, qualidade e municípios do DF), 5 do CDC (envelope do Debezium, última mudança por chave e exclusão) e 4 do portal (consolidação das etapas, trecho do registro de erro e situação geral) |
 | Verificação de ponta a ponta | `make smoke` | Todos os containers e conexões, e três fluxos reais: Airflow → Spark → lakehouse e DW; evento → alerta no DW; alteração no prontuário → DW |
 | Segurança | `make security-check` | 18 controles: TLS, criptografia em repouso, permissões por papel e por camada, e mascaramento |
+
+### III.11 Portal da plataforma
+
+As ferramentas técnicas (Airflow, Grafana, Kafka UI, Spark) respondem a tudo, mas exigem saber onde procurar. O portal é uma camada fina por cima delas, pensada para o **usuário de negócio**, que responde de relance a quatro perguntas:
+
+| Pergunta | O que o portal mostra | De onde vem |
+|---|---|---|
+| A plataforma está funcionando? | Uma situação geral (tudo funcionando, pontos de atenção ou falhas) e a lista de problemas em linguagem simples | Alertas e alvos do Prometheus |
+| A carga do SRAG deu certo? Em que etapa está? | A última execução como uma linha de etapas, com a etapa atual destacada, os arquivos por ano e o resultado das regras de qualidade | API do Airflow e DW |
+| Se falhou, onde e por quê? | A etapa que falhou, o trecho do registro que explica o motivo e o link direto para o registro completo | API do Airflow |
+| Onde vejo os resultados? | Links para os quatro painéis do Metabase e, para quem quiser o detalhe, para as ferramentas técnicas | Arquivo gerado por `make metabase` |
+
+A página se atualiza sozinha a cada 15 segundos e mostra também a situação do tempo real: se a speed layer e o CDC estão em dia e quando foi a última atualização de cada um. Quando a speed layer para, o portal distingue a causa: o processamento parado ou os eventos que deixaram de chegar da origem.
+
+Decisões de desenho:
+
+- **Somente leitura e menor privilégio.** O portal consulta o Airflow com um usuário próprio de papel Viewer (criado pelo `airflow-init`) e o DW com o `bi_reader`, via TLS. Ele não consegue disparar, pausar nem alterar nada, e as credenciais ficam no servidor, nunca no navegador.
+- **Degradação elegante.** Cada fonte é consultada em paralelo e de forma independente. Se o Airflow sair do ar, o portal avisa que não conseguiu consultá-lo e continua exibindo o resto.
+- **Sem duplicar as ferramentas.** O portal mostra o essencial e aponta para onde está o detalhe. Não há gráficos: eles continuam no Metabase e no Grafana.
 
 ---
 
@@ -448,9 +476,8 @@ O dimensionamento do intervalo da speed layer mostra o raciocínio: o custo de c
 - **Kafka sem autenticação nem criptografia internas.** Os brokers aceitam conexões sem TLS nem SASL dentro da rede Docker. Os eventos e os envelopes do CDC carregam dados pessoais pelo período de retenção dos tópicos (7 dias no CDC). O acesso pela interface exige login e mascara os campos pessoais, mas, em produção, o Kafka precisaria de TLS, SASL e ACLs por tópico, ou da pseudonimização já no conector (transformações do Kafka Connect).
 - **Gravações concorrentes no Delta Lake sobre S3.** O object storage não oferece a operação atômica "gravar somente se não existir" de que o log de transações do Delta precisa. Por isso, cada tabela tem um único gravador, as DAGs usam `max_active_runs=1` e o smoke test grava numa tabela exclusiva por execução. Em produção, a solução é um LogStore com coordenação externa (como o baseado em DynamoDB, na AWS) ou um formato com catálogo transacional, como o Iceberg.
 - **Remoção física dos dados eliminados.** A eliminação de um titular apaga os registros da silver e da bronze, mas os arquivos antigos só somem do object storage no `VACUUM` do Delta Lake, depois do período de retenção. Uma rotina agendada de `VACUUM` ainda não foi implementada.
-- **Arquivos pequenos no streaming.** Cada micro-batch gera arquivos pequenos nas tabelas Delta. Sem compactação periódica (`OPTIMIZE`), as leituras ficam mais lentas com o tempo.
-- **Interfaces administrativas sem autenticação.** O Prometheus e as interfaces do Spark não exigem login. Localmente, isso é aceitável; em produção, ficariam atrás de um proxy com autenticação única.
-- **Defeito conhecido no Spark 4.1.** Uma query do Kafka que retoma um lote pendente do checkpoint pode falhar com `NullPointerException` ao calcular as métricas da fonte (relato #55236 no repositório do Spark). O contorno está automatizado em `make streaming-recomecar`, que inicia uma nova geração de checkpoints sem perder nem duplicar gravações (Apêndice B).
+- **Arquivos pequenos no streaming (medido).** Cada micro-batch grava arquivos novos nas tabelas Delta, e ainda não há compactação periódica. Depois de cerca de dois dias de operação contínua, a bronze de eventos acumulou 8.215 arquivos com média de 58 KB, a silver de sinais vitais 5.490 arquivos de 39 KB, e a bronze do CDC 6.038 arquivos de 14 KB. O tamanho saudável fica na casa de dezenas a centenas de MB por arquivo. O efeito aparece na duração dos lotes: na speed layer, subiu de cerca de 13 para 55 segundos, ainda sem atraso, mas com latência maior. No CDC, a remoção dos eventos de um titular eliminado percorre todos os arquivos da bronze a cada lote com eliminações. As tabelas atualizadas por `MERGE` (estado das internações e silver do CDC) não sofrem com isso, porque o `MERGE` reescreve os arquivos. Até a compactação automática, a mitigação é manual: `make lakehouse-compactar` para a speed layer, compacta as tabelas fragmentadas e a religa. A correção definitiva está nas melhorias de curto prazo.
+- **Interfaces administrativas sem autenticação.** O Prometheus, as interfaces do Spark e o portal não exigem login. O portal não exibe dados pessoais, só situações e totais. Localmente, isso é aceitável; em produção, ficariam atrás de um proxy com autenticação única.
 - **Anos anteriores do SRAG.** A carga cobre 2024 a 2026. Os anos de 2019 a 2023 podem ser incluídos pela variável `SRAG_ANOS`, sem mudança de código.
 
 ### Lições aprendidas
@@ -459,6 +486,7 @@ Construir a plataforma num ambiente real, com recursos limitados, gerou problema
 
 | Incidente | Causa | O que mudou |
 |---|---|---|
+| Streaming cada vez mais lento, com a CPU quase ociosa | Disco de dados do Docker num HD mecânico: pressão de disco de 40% a 46%, com todos os processos ativos parados esperando o disco em 40% do tempo. A compactação reduziu 23 mil arquivos para 20, mas não resolveu, porque o limite era o disco, e não a quantidade de arquivos | SSD passou a ser requisito, com a justificativa medida (Apêndice A). A lição: medir a causa (pressão de disco) antes de atacar o sintoma (lentidão) |
 | Plataforma inteira fora do ar, com o disco do Docker em somente leitura | SSD do Windows cheio: o disco virtual do Docker não conseguia crescer | Disco de dados movido para outra unidade e alerta `DiscoQuaseCheio`. O alerta cobre o disco virtual por dentro; o disco do Windows precisa de monitoração pelo lado do host |
 | Master do Spark sem responder por quase dois minutos | Memória de serviços ociosos enviada ao swap, que estava num HD | Swap de volta ao SSD e `vm.swappiness` reduzido para 10 |
 | Pastas de configuração montadas vazias depois de religar a máquina | Containers religados pelo Docker antes de o WSL estar disponível | Política `restart: on-failure`: a plataforma só sobe por `make up`, com o ambiente pronto |
@@ -466,7 +494,9 @@ Construir a plataforma num ambiente real, com recursos limitados, gerou problema
 | Cerca de 3% dos casos de SRAG sem município no cadastro do IBGE | O SIVEP-Gripe registra as Regiões Administrativas do DF com códigos próprios, enquanto o IBGE tem um único município, Brasília | Códigos padronizados na silver, preservando o original, com teste automatizado e reprocessamento idempotente. **A regra de qualidade detectou o problema**, e não um usuário |
 | Carga dos municípios recusada pela API do IBGE (HTTP 400) | Cabeçalho `User-Agent` com acento | Cabeçalhos HTTP restritos a ASCII, com comentário no código |
 | Busca da contagem de eliminações cada vez mais lenta | A consulta relia a bronze inteira a cada lote | Contagem incremental: o total anterior mais as eliminações do lote |
-| Speed layer em ciclo de reinícios | Defeito do Spark 4.1 ao retomar um lote pendente | Geração de checkpoints versionada, com o identificador de idempotência acompanhando a geração. Durante a investigação, o escalonamento FAIR entre as queries foi testado e revertido; reavaliá-lo com o Spark corrigido fica como melhoria |
+| Speed layer sem processar, com o gerador aparentemente no ar | Depois de o Kafka ser recriado, o produtor idempotente do gerador entrou num estado do qual não saía sozinho, e todas as mensagens expiravam sem ser entregues. O alerta disparado ("Speed layer parada") apontava o sintoma, e não a causa | O gerador passou a encerrar com erro quando o produtor não consegue entregar (*fail fast*), e o Docker o reinicia com um produtor novo. Novo alerta "Nenhum evento chegando aos tópicos", medido no próprio Kafka, e o alerta da speed layer passou a exigir que haja eventos chegando. O portal diferencia as duas situações |
+| Speed layer em ciclo de reinícios | Defeito no conector Kafka do Spark 4.1.2 (relato #55236 no repositório do Spark): ao retomar um lote interrompido no meio, a query falhava ao calcular as métricas da fonte. Repetia-se a cada parada no meio de um lote | Contorno imediato com a geração de checkpoints versionada (`make streaming-recomecar`) e, depois, a **correção na origem**: atualização para o Spark 4.1.3, depois de confirmar no código-fonte da versão que a correção estava incluída. Durante a investigação, o escalonamento FAIR entre as queries foi testado e revertido |
+| Portal mostrando a speed layer parada há 14 horas | O mesmo defeito, disparado pela recriação do container durante a instalação do portal | **O portal detectou o problema no primeiro uso**, antes de qualquer usuário perceber pelos painéis |
 
 A lição geral: **observabilidade e verificação automatizada pagaram o próprio custo**. Os diagnósticos foram feitos com as métricas do Prometheus, os logs centralizados e o `make smoke`. Cada correção foi validada pelos mesmos instrumentos, antes de ser considerada concluída.
 
@@ -474,11 +504,11 @@ A lição geral: **observabilidade e verificação automatizada pagaram o própr
 
 **Curto prazo:**
 
-1. DAG de manutenção do lakehouse, com `OPTIMIZE` (compactação) e `VACUUM` (remoção física, que completa a eliminação de titulares).
+1. Compactação periódica (`OPTIMIZE`) e limpeza (`VACUUM`) das tabelas do streaming, feitas pela própria aplicação de streaming a cada certo número de lotes. Como ela é a única gravadora dessas tabelas, a manutenção não disputa gravações com outro processo, o que evita conflitos no Delta Lake sobre S3. Na bronze do CDC, a compactação ordenada pelo identificador do titular (`ZORDER`) permite que a remoção de um titular leia só os arquivos que o contêm. O `VACUUM` completa a eliminação, apagando fisicamente os arquivos antigos.
 2. TLS, SASL e ACLs no Kafka, e pseudonimização dos campos pessoais já no conector do Debezium.
 3. Registro de esquemas (Schema Registry) com Avro, para validar a estrutura dos eventos na publicação, e não só no consumo.
-4. Atualização do Spark para uma versão com a correção do defeito do conector Kafka.
-5. Carga dos anos de 2019 a 2023 do SRAG.
+4. Carga dos anos de 2019 a 2023 do SRAG.
+5. No portal: login integrado ao das demais ferramentas e notificações (por e-mail ou chat) quando uma carga falhar.
 
 **Médio prazo:**
 
@@ -492,7 +522,7 @@ A lição geral: **observabilidade e verificação automatizada pagaram o própr
 
 ### Considerações finais
 
-A plataforma atende aos oito requisitos do desafio com uma solução funcional e verificável: dados reais do OpenDataSUS e do IBGE no lote, eventos simulados em tempo real e um banco transacional capturado por CDC, integrados num lakehouse e servidos em painéis de BI. Segurança e privacidade estão no desenho desde o início, com minimização, pseudonimização, mascaramento e eliminação de titulares propagada por toda a cadeia. A plataforma também se verifica sozinha: 24 testes automatizados, 18 controles de segurança e três fluxos de ponta a ponta executados a cada `make smoke`.
+A plataforma atende aos oito requisitos do desafio com uma solução funcional e verificável: dados reais do OpenDataSUS e do IBGE no lote, eventos simulados em tempo real e um banco transacional capturado por CDC, integrados num lakehouse e servidos em painéis de BI. Segurança e privacidade estão no desenho desde o início, com minimização, pseudonimização, mascaramento e eliminação de titulares propagada por toda a cadeia. Para quem usa os dados, o portal reúne numa página só a situação da plataforma, o andamento das cargas e o caminho até os painéis. E a plataforma se verifica sozinha: 28 testes automatizados, 18 controles de segurança e três fluxos de ponta a ponta executados a cada `make smoke`.
 
 ---
 
@@ -506,7 +536,9 @@ A plataforma atende aos oito requisitos do desafio com uma solução funcional e
 | WSL2 com Ubuntu (apenas Windows) | O projeto deve ficar **dentro** do Linux (por exemplo, `~/projetos`), nunca em `/mnt/c` |
 | `git`, `make`, `openssl`, `jq`, `curl` e `python3` | No Ubuntu: `sudo apt install -y git make openssl jq curl python3` |
 | Memória para o Docker | Mínimo de 12 GB; recomendado 16 GB ou mais para a plataforma completa |
-| Disco livre | Cerca de 60 GB para imagens, dados e cache de build, de preferência em SSD |
+| Disco livre | Cerca de 60 GB para imagens, dados e cache de build, **em SSD** (ver a observação abaixo) |
+
+**Por que SSD.** O streaming grava a cada poucos segundos no Kafka, no Silo, no Delta Lake e no PostgreSQL ao mesmo tempo, e esse tipo de carga (muitas gravações pequenas e aleatórias) é o ponto fraco de um disco mecânico. Medido neste projeto, com o disco de dados do Docker num HD, depois de dias de operação contínua: pressão de disco de 40% a 46% (`/proc/pressure/io`), CPU esperando o disco em 22% a 52% do tempo (`vmstat`) e lotes do streaming subindo de 13 para até 98 segundos, com a CPU quase ociosa. Num SSD, essa carga fica muito abaixo do limite.
 
 No Windows, os recursos do WSL ficam no arquivo `%UserProfile%\.wslconfig`. Configuração usada no desenvolvimento:
 
@@ -532,17 +564,21 @@ make gerador-start   # liga os eventos simulados e o simulador do prontuário
 make batch-srag      # carrega o SRAG do OpenDataSUS (cerca de 30 minutos)
 ```
 
+Em seguida, abra o **portal** em http://localhost:8090 para acompanhar a carga e chegar aos painéis.
+
 O primeiro `make up` leva de 10 a 20 minutos, porque constrói as imagens do Spark e do Airflow. As execuções seguintes usam o cache e levam poucos minutos. Nenhum segredo é versionado: o `.env` e a pasta `certs/` são gerados localmente e estão no `.gitignore`.
 
 ### Rotina de uso
 
 - **Para ligar:** abra o Docker Desktop, espere o "Engine running", abra o Ubuntu e rode `make up`.
+- **Antes de demonstrar:** confira se o relógio do Windows e o da plataforma batem (Apêndice B). Um relógio desalinhado desloca a janela dos gráficos de tempo real.
 - **Para desligar a máquina:** rode `make down` **antes**. Ele para os serviços de forma ordenada, e os dados ficam preservados nos volumes. Desligar com a plataforma rodando pode deixar gravações pela metade (Apêndice B).
 
 ### Acessos
 
 | Serviço | Endereço | Usuário | Senha |
 |---|---|---|---|
+| **Portal da plataforma** | http://localhost:8090 | — | — |
 | Airflow | http://localhost:8080 | `admin` | `AIRFLOW_ADMIN_PASSWORD` |
 | Metabase | http://localhost:3000 | `METABASE_ADMIN_EMAIL` | `METABASE_ADMIN_PASSWORD` |
 | Grafana | http://localhost:3001 | `admin` | `GRAFANA_ADMIN_PASSWORD` |
@@ -562,13 +598,14 @@ As senhas ficam no `.env`. Exemplo: `grep GRAFANA_ADMIN_PASSWORD .env`.
 | `make setup` | Verifica os pré-requisitos e cria o `.env` e os certificados |
 | `make up` / `make down` | Sobe / para os serviços (os dados são mantidos) |
 | `make smoke` / `make smoke-rapido` | Verificação completa, com os fluxos de ponta a ponta / verificação de containers, conexões e segurança |
-| `make test` | Testes automatizados |
+| `make test` | Testes automatizados (transformações e portal) |
 | `make security-check` | Os 18 controles de segurança |
 | `make mascaramento-demo` | Demonstração das técnicas de mascaramento |
 | `make gerador-start taxa=N` / `make gerador-stop` | Liga / desliga os eventos simulados e o simulador do prontuário |
 | `make batch-srag` / `make batch-status` | Dispara a carga do SRAG / mostra as cargas e as regras de qualidade |
 | `make batch-reprocessar` | Reprocessa o SRAG a partir da landing, sem novo download |
 | `make cdc-status` / `make cdc-registrar` | Estado do CDC / registro do conector do Debezium |
+| `make lakehouse-compactar` | Compacta as tabelas do streaming (para e religa a speed layer) |
 | `make streaming-recomecar` | Nova geração de checkpoints do streaming (Apêndice B) |
 | `make metabase` | Recria os painéis do Metabase pela API |
 | `make scale-workers n=N` | Ajusta o número de workers do Spark |
@@ -591,7 +628,7 @@ Os serviços são agrupados em *profiles*, definidos por `COMPOSE_PROFILES` no `
 | `speed` | Speed layer (eventos e CDC) |
 | `simulation` | Gerador (ligado sob demanda com `make gerador-start`) |
 | `orchestration` | Airflow e statsd-exporter |
-| `bi` | Metabase |
+| `bi` | Metabase e portal da plataforma |
 | `observability` | Prometheus, Grafana, Loki, Alloy, cAdvisor e exporters |
 
 | Parâmetro (`.env`) | Padrão | Efeito |
@@ -616,10 +653,13 @@ Os serviços são agrupados em *profiles*, definidos por `COMPOSE_PROFILES` no `
 | `Conflict. The container name ... is already in use`, ou container em estado `Dead` | Recriação interrompida: `docker rm -f $(docker ps -aq --filter name=<serviço>)` e `make up` |
 | Após religar a máquina, serviço falha com `No such file or directory` em arquivo de configuração | Container montado antes de o WSL estar ativo: `docker compose up -d --force-recreate <serviço>` |
 | Serviço saudável, mas a porta não responde no host (`curl` retorna `000`) | Encaminhamento de portas desatualizado depois de reiniciar o WSL: `docker compose up -d --force-recreate <serviço>` |
-| Speed layer reiniciando em ciclo, com `NullPointerException` em `KafkaMicroBatchStream.metrics` | Defeito do Spark 4.1 ao retomar um lote pendente: `make streaming-recomecar`. Os eventos recomeçam do ponto atual do Kafka, e o CDC é reprocessado desde o início, sem duplicar gravações |
+| Lotes do streaming cada vez mais lentos; `make smoke` falha por prazo nas etapas 3b ou 3c | Primeiro, meça a pressão de disco: `cat /proc/pressure/io`. Se o `avg60` passar de 20, o gargalo é o disco: use SSD para os dados do Docker, ou pare o gerador quando não estiver usando a plataforma. Se o disco estiver folgado, a causa é a fragmentação das tabelas: `make lakehouse-compactar` |
+| Portal mostra "Sem eventos chegando"; alerta "Nenhum evento chegando aos tópicos" | O gerador está no ar, mas não consegue publicar no Kafka. Ele se reinicia sozinho em até 2 minutos; se persistir, veja `docker logs case-saude-gerador-1` e rode `make gerador-stop` e `make gerador-start` |
+| Speed layer reiniciando em ciclo, com `NullPointerException` em `KafkaMicroBatchStream.metrics` | Defeito do Spark 4.1.2, corrigido na 4.1.3 usada pelo projeto. Se aparecer, a imagem está desatualizada: reconstrua com `make up`. Para um checkpoint danificado por outro motivo, `make streaming-recomecar` inicia uma nova geração: os eventos recomeçam do ponto atual do Kafka, e o CDC é reprocessado desde o início, sem duplicar gravações |
 | Master do Spark não responde ("All masters are unresponsive") | Memória de serviços ociosos no swap em disco lento: swap em SSD e `vm.swappiness=10` (Apêndice A) |
 | Tarefa do Airflow falha com `Invalid auth token` | Token da tarefa expirado com a máquina sobrecarregada. As retentativas resolvem, e a validade foi ampliada para 1 hora |
 | `DagBag import timeout` no Airflow | Importação lenta das DAGs em disco mecânico: o limite foi ampliado para 120 segundos |
+| Prometheus avisa `Server time is out of sync`; gráficos do Grafana terminam antes de "agora" | Relógio do Windows (usado pelo navegador) desalinhado do relógio da plataforma. Compare com `date -u` no Ubuntu. Se o Windows estiver errado, configure uma fonte de hora no PowerShell como administrador: `w32tm /config /manualpeerlist:"a.st1.ntp.br,0x9 time.windows.com,0x9" /syncfromflags:manual /update`, depois `Restart-Service w32time` e `w32tm /resync /force`. Se o Ubuntu estiver errado (comum depois de suspender o Windows): `wsl -d Ubuntu -u root hwclock -s` |
 | Containers reiniciando ou jobs interrompidos | Memória insuficiente: aumente o limite no `.wslconfig` ou suba menos profiles |
 | Metabase: `pg_hba.conf rejects connection ... no encryption` | SSL desativado na conexão do DW: ative-o com o modo `require` |
 | Comandos `docker` travados, sem resposta | Docker Desktop sobrecarregado: `timeout 20 docker info`; se não responder, reinicie o Docker Desktop e rode `wsl --shutdown` |
@@ -634,6 +674,7 @@ Os serviços são agrupados em *profiles*, definidos por `COMPOSE_PROFILES` no `
 ├── dags/        # DAGs do Airflow (batch do SRAG e smoke test)
 ├── docker/      # Dockerfiles do Spark e do Airflow
 ├── generator/   # gerador de eventos hospitalares e simulador do prontuário
+├── portal/      # portal da plataforma (FastAPI e página web)
 ├── jobs/        # jobs Spark: batch, streaming (eventos e CDC) e biblioteca de mascaramento
 ├── scripts/     # setup, inicialização, smoke test, segurança e painéis do Metabase
 ├── sql/         # inicialização do PostgreSQL, DW (schemas, papéis e segurança) e prontuário

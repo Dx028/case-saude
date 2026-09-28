@@ -5,7 +5,7 @@ COMPOSE := docker compose
 # Profiles do .env + "simulation" (o gerador). A opção --profile substituiria a lista do .env.
 COMPOSE_SIM := COMPOSE_PROFILES=$(shell grep ^COMPOSE_PROFILES= .env 2>/dev/null | cut -d= -f2),simulation docker compose
 
-.PHONY: help setup check env certs smoke smoke-rapido test batch-srag batch-status batch-reprocessar metabase cdc-status cdc-registrar streaming-recomecar gerador-start gerador-stop gerador-logs speed-logs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
+.PHONY: help setup check env certs smoke smoke-rapido test batch-srag batch-status batch-reprocessar metabase cdc-status cdc-registrar streaming-recomecar lakehouse-compactar gerador-start gerador-stop gerador-logs speed-logs security-check mascaramento-demo validate up down restart ps logs psql topics spark-smoke scale-workers airflow db-setup targets alerts urls clean smoke
 
 help: ## Lista os comandos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -25,6 +25,7 @@ validate: ## Valida a sintaxe do docker-compose.yml
 	@$(COMPOSE) config -q && echo "docker-compose.yml válido."
 
 up: certs ## Sobe os serviços dos profiles definidos em COMPOSE_PROFILES
+	@mkdir -p data/portal
 	$(COMPOSE) up -d --build
 
 down: ## Para os serviços (mantém os dados)
@@ -71,6 +72,7 @@ mascaramento-demo: ## Demonstra as técnicas de mascaramento com o Spark
 
 urls: ## Mostra os endereços das interfaces e das conexões
 	@echo "Interfaces web (abrem no navegador):"
+	@echo "  Portal da plataforma    http://localhost:$$(grep ^PORTAL_PORT= .env | cut -d= -f2)   <- comece por aqui"
 	@echo "  Airflow                 http://localhost:$$(grep ^AIRFLOW_PORT= .env | cut -d= -f2)"
 	@echo "  Grafana                 http://localhost:$$(grep ^GRAFANA_PORT= .env | cut -d= -f2)"
 	@echo "  Metabase                http://localhost:$$(grep ^METABASE_PORT= .env | cut -d= -f2)"
@@ -89,8 +91,9 @@ urls: ## Mostra os endereços das interfaces e das conexões
 clean: ## Remove containers E volumes (apaga os dados!)
 	@read -p "Isso apaga TODOS os dados do projeto. Confirmar? [s/N] " r; [[ $$r == s ]] && $(COMPOSE_SIM) down -v --remove-orphans || echo "Cancelado."
 
-test: ## Roda os testes automatizados (Spark local, sem dependências externas)
+test: ## Roda os testes automatizados (transformações no Spark e regras do portal)
 	$(COMPOSE) exec -e PII_HMAC_KEY=chave-de-teste spark-master /opt/spark/bin/spark-submit --master 'local[2]' --driver-memory 768m /opt/tests/run_tests.py
+	$(COMPOSE) exec -T portal python -m unittest -v test_app
 
 batch-srag: ## Dispara a batch layer do SRAG (OpenDataSUS -> landing -> bronze -> silver -> gold)
 	$(COMPOSE) exec airflow-scheduler airflow dags unpause batch_srag
@@ -102,6 +105,12 @@ cdc-status: ## Estado do conector de CDC e comparação entre a origem e o espel
 	  "SELECT (SELECT count(*) FROM clinico.pacientes) AS pacientes_na_origem, (SELECT count(*) FROM clinico.atendimentos) AS atendimentos_na_origem, (SELECT pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) FROM pg_replication_slots WHERE slot_name = 'debezium_prontuario') AS wal_pendente;"
 	@$(COMPOSE) exec -T postgres psql -U $$(grep ^POSTGRES_USER= .env | cut -d= -f2) -d dw -c \
 	  "SELECT pacientes AS pacientes_no_espelho, eliminados AS titulares_eliminados, to_char(atualizado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI:SS') AS atualizado FROM gold.cdc_pacientes;"
+
+lakehouse-compactar: ## Compacta as tabelas Delta do streaming (para a speed layer durante a manutenção)
+	$(COMPOSE) stop spark-streaming
+	@$(COMPOSE) exec -T spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 \
+	  --conf spark.cores.max=4 --conf spark.executor.memory=1g /opt/jobs/manutencao/compactar.py 2>/dev/null; \
+	  status=$$?; $(COMPOSE) start spark-streaming; exit $$status
 
 streaming-recomecar: ## Recomeça os checkpoints do streaming (nova geração) em caso de checkpoint danificado
 	@atual=$$(grep ^STREAMING_GERACAO= .env | cut -d= -f2); nova=$$(( $${atual:-1} + 1 )); \

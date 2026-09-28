@@ -95,6 +95,7 @@ if ativo orchestration; then
   checar "Airflow: banco de metadados e scheduler" 12 bash -c "curl -fsS -m 5 http://localhost:${AIRFLOW_PORT}/api/v2/monitor/health | jq -e '.metadatabase.status == \"healthy\" and .scheduler.status == \"healthy\"'"
 fi
 if ativo bi; then
+  checar "Portal da plataforma respondendo"      12 bash -c "curl -fsS -m 20 http://localhost:${PORTAL_PORT:-8090}/api/status | jq -e '.saude.nivel'"
   checar "Metabase saudável"                    12 bash -c "curl -fsS -m 5 http://localhost:${METABASE_PORT}/api/health | jq -e '.status == \"ok\"'"
 fi
 if ativo observability; then
