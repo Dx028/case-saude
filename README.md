@@ -526,11 +526,12 @@ A lição geral: **observabilidade e verificação automatizada pagaram o própr
 
 **Médio prazo:**
 
-1. Integração contínua: rodar `make test` e a validação do compose a cada *commit*, no GitHub Actions.
-2. Linhagem de dados com OpenLineage, cujo provider já vem na imagem do Airflow.
-3. Catálogo transacional (Iceberg com um catálogo REST, ou Unity Catalog com Delta), para permitir escritores concorrentes e governança centralizada.
-4. Contratos de dados e testes de qualidade declarativos (por exemplo, Great Expectations ou Soda), versionados junto com as fontes.
-5. Separar as queries de streaming em aplicações independentes, para isolar falhas e escalar cada fluxo de forma independente.
+1. **Ingestão orientada a configuração.** A plataforma é genérica, mas os pipelines foram escritos para este domínio: uma fonte nova, como uma planilha de preços de veículos, hoje exige uma DAG e transformações novas. O próximo passo é descrever cada fonte num arquivo de configuração versionado no Git (onde está o arquivo e em que formato, as colunas e os tipos, a chave, as colunas pessoais e o tratamento de cada uma, as regras de qualidade e a agenda). A partir dele, uma DAG seria gerada automaticamente, e um job genérico produziria a bronze e a silver, reaproveitando o controle de ingestão, o portão de qualidade, a biblioteca de mascaramento e o acompanhamento pelo portal. A gold e os painéis continuariam sob medida, porque respondem a perguntas de negócio.
+2. Integração contínua: rodar `make test` e a validação do compose a cada *commit*, no GitHub Actions.
+3. Linhagem de dados com OpenLineage, cujo provider já vem na imagem do Airflow.
+4. Catálogo transacional (Iceberg com um catálogo REST, ou Unity Catalog com Delta), para permitir escritores concorrentes e governança centralizada.
+5. Contratos de dados e testes de qualidade declarativos (por exemplo, Great Expectations ou Soda), versionados junto com as fontes. Combinam com a ingestão orientada a configuração: as regras de cada fonte ficariam no mesmo arquivo.
+6. Separar as queries de streaming em aplicações independentes, para isolar falhas e escalar cada fluxo de forma independente.
 
 **Caminho para produção:** implantar em Kubernetes, com o Spark e o Airflow escalando sob demanda, ou migrar para os serviços gerenciados listados na seção III.3. Em ambos os casos, entram segredos num cofre (como o Vault ou o gerenciador de segredos do provedor), alta disponibilidade do PostgreSQL e do Kafka, backup e testes de recuperação.
 
