@@ -448,6 +448,18 @@ O dimensionamento do intervalo da speed layer mostra o raciocínio: o custo de c
 | Verificação de ponta a ponta | `make smoke` | Todos os containers e conexões, e três fluxos reais: Airflow → Spark → lakehouse e DW; evento → alerta no DW; alteração no prontuário → DW |
 | Segurança | `make security-check` | 18 controles: TLS, criptografia em repouso, permissões por papel e por camada, e mascaramento |
 
+**Teste de reprodutibilidade.** Antes da entrega, a instalação foi validada do zero, como faria um avaliador: um clone do repositório numa pasta nova, com volumes e segredos novos, seguindo apenas os comandos do Apêndice A. Tudo rodou sem intervenção, em 44 minutos:
+
+| Etapa | Resultado |
+|---|---|
+| `make setup` e `make up` | Aprovados, em cerca de 5 minutos (com as imagens em cache) |
+| `make test` | 28 testes aprovados |
+| `make metabase` | Administrador, conexão e 4 painéis criados do zero pela API |
+| Carga do SRAG | Aprovada em 17 minutos, com a descoberta automática dos recortes publicados naquela semana |
+| `make smoke` | Aprovado: alerta no DW em 28,7 s, alteração no prontuário no DW em cerca de 1 s, e os 18 controles de segurança |
+
+O mesmo teste mediu o efeito do tempo de operação no mesmo disco mecânico: com tabelas novas, os lotes da speed layer levaram 16,7 s e a pressão de disco ficou em 16%. Na plataforma com dias de operação contínua, os lotes chegavam a 55 a 98 s, com pressão de disco de 46% (seção IV).
+
 ### III.11 Portal da plataforma
 
 As ferramentas técnicas (Airflow, Grafana, Kafka UI, Spark) respondem a tudo, mas exigem saber onde procurar. O portal é uma camada fina por cima delas, pensada para o **usuário de negócio**, que responde de relance a quatro perguntas:
@@ -478,6 +490,7 @@ Decisões de desenho:
 - **Remoção física dos dados eliminados.** A eliminação de um titular apaga os registros da silver e da bronze, mas os arquivos antigos só somem do object storage no `VACUUM` do Delta Lake, depois do período de retenção. Uma rotina agendada de `VACUUM` ainda não foi implementada.
 - **Arquivos pequenos no streaming (medido).** Cada micro-batch grava arquivos novos nas tabelas Delta, e ainda não há compactação periódica. Depois de cerca de dois dias de operação contínua, a bronze de eventos acumulou 8.215 arquivos com média de 58 KB, a silver de sinais vitais 5.490 arquivos de 39 KB, e a bronze do CDC 6.038 arquivos de 14 KB. O tamanho saudável fica na casa de dezenas a centenas de MB por arquivo. O efeito aparece na duração dos lotes: na speed layer, subiu de cerca de 13 para 55 segundos, ainda sem atraso, mas com latência maior. No CDC, a remoção dos eventos de um titular eliminado percorre todos os arquivos da bronze a cada lote com eliminações. As tabelas atualizadas por `MERGE` (estado das internações e silver do CDC) não sofrem com isso, porque o `MERGE` reescreve os arquivos. Até a compactação automática, a mitigação é manual: `make lakehouse-compactar` para a speed layer, compacta as tabelas fragmentadas e a religa. A correção definitiva está nas melhorias de curto prazo.
 - **Interfaces administrativas sem autenticação.** O Prometheus, as interfaces do Spark e o portal não exigem login. O portal não exibe dados pessoais, só situações e totais. Localmente, isso é aceitável; em produção, ficariam atrás de um proxy com autenticação única.
+- **Segunda cópia simultânea da plataforma.** A instalação padrão usa sempre o projeto `case-saude`. Para rodar uma segunda cópia ao mesmo tempo (como num teste), é preciso definir outro `COMPOSE_PROJECT_NAME` no ambiente e usar outras portas. Nessa segunda cópia, os logs não chegam ao Loki, porque a coleta do Alloy filtra os containers pelo nome do projeto `case-saude`.
 - **Anos anteriores do SRAG.** A carga cobre 2024 a 2026. Os anos de 2019 a 2023 podem ser incluídos pela variável `SRAG_ANOS`, sem mudança de código.
 
 ### Lições aprendidas
@@ -487,6 +500,7 @@ Construir a plataforma num ambiente real, com recursos limitados, gerou problema
 | Incidente | Causa | O que mudou |
 |---|---|---|
 | Streaming cada vez mais lento, com a CPU quase ociosa | Disco de dados do Docker num HD mecânico: pressão de disco de 40% a 46%, com todos os processos ativos parados esperando o disco em 40% do tempo. A compactação reduziu 23 mil arquivos para 20, mas não resolveu, porque o limite era o disco, e não a quantidade de arquivos | SSD passou a ser requisito, com a justificativa medida (Apêndice A). A lição: medir a causa (pressão de disco) antes de atacar o sintoma (lentidão) |
+| O primeiro teste de reprodutibilidade usou os volumes da plataforma original | O `.env.example` fixa `COMPOSE_PROJECT_NAME=case-saude`, e o clone de teste herdou o mesmo nome de projeto. As senhas novas foram recusadas pelos bancos existentes, e nenhum dado foi alterado | O teste passou a usar um projeto próprio, com uma trava que aborta se encontrar containers fora dele. O `smoke.sh` e o `security-check.sh` passaram a respeitar o nome do projeto definido no ambiente, em vez de sobrescrevê-lo com o do `.env` |
 | Plataforma inteira fora do ar, com o disco do Docker em somente leitura | SSD do Windows cheio: o disco virtual do Docker não conseguia crescer | Disco de dados movido para outra unidade e alerta `DiscoQuaseCheio`. O alerta cobre o disco virtual por dentro; o disco do Windows precisa de monitoração pelo lado do host |
 | Master do Spark sem responder por quase dois minutos | Memória de serviços ociosos enviada ao swap, que estava num HD | Swap de volta ao SSD e `vm.swappiness` reduzido para 10 |
 | Pastas de configuração montadas vazias depois de religar a máquina | Containers religados pelo Docker antes de o WSL estar disponível | Política `restart: on-failure`: a plataforma só sobe por `make up`, com o ambiente pronto |

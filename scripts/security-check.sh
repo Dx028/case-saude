@@ -3,7 +3,10 @@
 # Cada teste informa o resultado esperado; qualquer divergência é FALHA.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+PROJETO_DEFINIDO="${COMPOSE_PROJECT_NAME:-}"
 set -a; . ./.env; set +a
+# Um nome de projeto definido no ambiente prevalece sobre o .env, como no docker compose
+[ -n "$PROJETO_DEFINIDO" ] && export COMPOSE_PROJECT_NAME="$PROJETO_DEFINIDO"
 
 falhas=0
 registrar() { # descrição | esperado | obtido

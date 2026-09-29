@@ -10,7 +10,10 @@
 # =============================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
+PROJETO_DEFINIDO="${COMPOSE_PROJECT_NAME:-}"
 set -a; . ./.env; set +a
+# Um nome de projeto definido no ambiente prevalece sobre o .env, como no docker compose
+[ -n "$PROJETO_DEFINIDO" ] && export COMPOSE_PROJECT_NAME="$PROJETO_DEFINIDO"
 
 RAPIDO="${RAPIDO:-0}"
 inicio=$(date +%s)
