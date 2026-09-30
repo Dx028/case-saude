@@ -46,7 +46,7 @@ O domínio de saúde foi escolhido por reunir, de forma natural, os pontos centr
 
 | Fonte | Natureza | Formato | Volume | Modo de ingestão |
 |---|---|---|---|---|
-| OpenDataSUS — SRAG (SIVEP-Gripe) | Dados abertos do Ministério da Saúde | CSV, 194 colunas | 921 MB e 816.655 notificações (2024 a 2026) | Lote semanal, incremental |
+| OpenDataSUS — SRAG (SIVEP-Gripe) | Dados abertos do Ministério da Saúde | CSV, 194 colunas | Cerca de 930 MB e 825 mil notificações de 2024 a 2026 (recortes de setembro de 2026, atualizados semanalmente) | Lote semanal, incremental |
 | IBGE — API de Localidades | API pública | JSON | 5.571 municípios | Lote |
 | Gerador de eventos hospitalares | Simulação (Faker `pt_BR`) | JSON no Kafka | 50 eventos/s por padrão (cerca de 4,3 milhões por dia), configurável | Streaming |
 | Prontuário eletrônico | Banco transacional simulado (PostgreSQL) | Tabelas relacionais | Cerca de 2 operações/s | CDC contínuo (Debezium) |
@@ -65,7 +65,7 @@ As quatro fontes cobrem os formatos citados no desafio: **arquivos CSV**, **API 
 | 6. Mascaramento de dados | [III.7](#iii7-mascaramento-e-anonimização) |
 | 7. Arquitetura de dados | [II](#ii-arquitetura-de-solução-e-arquitetura-técnica) e [III.8](#iii8-modelagem-e-camada-de-serving) |
 | 8. Escalabilidade | [III.9](#iii9-escalabilidade) |
-| Reprodutibilidade | [Apêndice A](#apêndice-a--como-executar) |
+| Reprodutibilidade | [Apêndice A](#apêndice-a--como-executar) e [III.10](#iii10-testes-e-verificação) |
 
 ---
 
@@ -148,7 +148,7 @@ flowchart TB
     end
     subgraph PROCESSING["processing"]
         SM["Spark master"]
-        SW["Spark workers<br/>(3 réplicas)"]
+        SW["Spark workers<br/>(2 réplicas por padrão)"]
     end
     subgraph SPEEDP["speed"]
         SS["spark-streaming<br/>eventos + CDC"]
@@ -265,7 +265,7 @@ sequenceDiagram
 | Arquitetura | Lambda | Kappa | As fontes históricas chegam como arquivos semanais, e a recomputação completa a partir dos dados brutos é o que permite corrigir erros descobertos depois. A operação hospitalar, por outro lado, exige tempo real. Uma arquitetura Kappa exigiria reproduzir os arquivos como streams, com mais complexidade e sem ganho para este caso |
 | Formato do lakehouse | Delta Lake | Apache Iceberg, Apache Hudi, Parquet puro | Transações ACID, `MERGE` para o estado e o espelho do CDC, histórico de versões e integração nativa com o Spark. O Iceberg seria a escolha para vários motores e escritores concorrentes, com catálogo transacional (seção IV) |
 | Object storage | Silo (API S3) | MinIO, AWS S3, Azure Data Lake, Google Cloud Storage | Gratuito, local e reproduzível, com a mesma API do S3: os caminhos `s3a://` funcionam sem mudança num provedor de nuvem |
-| Serving e DW | PostgreSQL | ClickHouse, DuckDB, Redshift, BigQuery, Snowflake | O volume da gold (cerca de 531 mil linhas agregadas) cabe com folga num PostgreSQL, que oferece TLS, papéis, permissões por schema e conexão direta com o BI. Com volumes na casa dos terabytes, um motor colunar ou um DW gerenciado passaria a ser mais adequado |
+| Serving e DW | PostgreSQL | ClickHouse, DuckDB, Redshift, BigQuery, Snowflake | O volume da gold (cerca de 530 mil linhas agregadas) cabe com folga num PostgreSQL, que oferece TLS, papéis, permissões por schema e conexão direta com o BI. Com volumes na casa dos terabytes, um motor colunar ou um DW gerenciado passaria a ser mais adequado |
 | Barramento de eventos | Apache Kafka (KRaft) | Amazon Kinesis, Google Pub/Sub, Apache Pulsar, RabbitMQ | Particionamento para paralelismo, retenção e releitura (replay), e o ecossistema do Kafka Connect, que viabiliza o CDC com Debezium. O modo KRaft dispensa o ZooKeeper |
 | Processamento | Apache Spark | Apache Flink, pandas ou DuckDB | Um único motor para as duas camadas, compartilhando código (como a biblioteca de mascaramento), com integração nativa ao Delta Lake e escala horizontal. O Flink reduziria a latência para milissegundos, ao custo de manter um segundo motor |
 | Captura de mudanças | Debezium (baseado em log) | Consultas periódicas por data de atualização | Captura também as exclusões, preserva a ordem pelo LSN e não gera carga de consultas nas tabelas de origem |
@@ -335,6 +335,8 @@ A camada batch tem um **portão de qualidade**: as regras são avaliadas antes d
 **Resultado na carga de 2024 a 2026:** as 26 regras foram aprovadas, sem nenhuma duplicidade nem notificação sem número. A regra de integridade referencial da gold detectou um problema real, descrito na seção IV: cerca de 3% dos casos com municípios inexistentes no IBGE. Depois da correção e do reprocessamento, o índice caiu para 0,034%, que corresponde aos casos sem município informado.
 
 A speed layer também valida cada evento (campos obrigatórios, tipos e faixas fisiológicas plausíveis). Os inválidos vão para a fila `saude.eventos.dlq`, com o motivo e a referência ao registro na bronze, sem dados pessoais.
+
+No lote, o controle é feito no conjunto: um valor inválido vira nulo e a linha segue para a silver, e o dado original continua preservado na bronze. Não há, por enquanto, uma tabela de quarentena linha a linha (seção IV).
 
 ### III.5 Observabilidade
 
@@ -488,8 +490,9 @@ Decisões de desenho:
 - **Kafka sem autenticação nem criptografia internas.** Os brokers aceitam conexões sem TLS nem SASL dentro da rede Docker. Os eventos e os envelopes do CDC carregam dados pessoais pelo período de retenção dos tópicos (7 dias no CDC). O acesso pela interface exige login e mascara os campos pessoais, mas, em produção, o Kafka precisaria de TLS, SASL e ACLs por tópico, ou da pseudonimização já no conector (transformações do Kafka Connect).
 - **Gravações concorrentes no Delta Lake sobre S3.** O object storage não oferece a operação atômica "gravar somente se não existir" de que o log de transações do Delta precisa. Por isso, cada tabela tem um único gravador, as DAGs usam `max_active_runs=1` e o smoke test grava numa tabela exclusiva por execução. Em produção, a solução é um LogStore com coordenação externa (como o baseado em DynamoDB, na AWS) ou um formato com catálogo transacional, como o Iceberg.
 - **Remoção física dos dados eliminados.** A eliminação de um titular apaga os registros da silver e da bronze, mas os arquivos antigos só somem do object storage no `VACUUM` do Delta Lake, depois do período de retenção. Uma rotina agendada de `VACUUM` ainda não foi implementada.
-- **Arquivos pequenos no streaming (medido).** Cada micro-batch grava arquivos novos nas tabelas Delta, e ainda não há compactação periódica. Depois de cerca de dois dias de operação contínua, a bronze de eventos acumulou 8.215 arquivos com média de 58 KB, a silver de sinais vitais 5.490 arquivos de 39 KB, e a bronze do CDC 6.038 arquivos de 14 KB. O tamanho saudável fica na casa de dezenas a centenas de MB por arquivo. O efeito aparece na duração dos lotes: na speed layer, subiu de cerca de 13 para 55 segundos, ainda sem atraso, mas com latência maior. No CDC, a remoção dos eventos de um titular eliminado percorre todos os arquivos da bronze a cada lote com eliminações. As tabelas atualizadas por `MERGE` (estado das internações e silver do CDC) não sofrem com isso, porque o `MERGE` reescreve os arquivos. Até a compactação automática, a mitigação é manual: `make lakehouse-compactar` para a speed layer, compacta as tabelas fragmentadas e a religa. A correção definitiva está nas melhorias de curto prazo.
+- **Arquivos pequenos no streaming (medido).** Cada micro-batch grava arquivos novos nas tabelas Delta, e ainda não há compactação periódica. Depois de cerca de dois dias de operação contínua, a bronze de eventos acumulou 8.215 arquivos com média de 58 KB, a silver de sinais vitais 5.490 arquivos de 39 KB, e a bronze do CDC 6.038 arquivos de 14 KB. O tamanho saudável fica na casa de dezenas a centenas de MB por arquivo. Somada ao disco mecânico, a fragmentação aparece na duração dos lotes: na speed layer, ela subiu de cerca de 13 para 55 segundos, ainda sem atraso, mas com latência maior. O diagnóstico completo, nas lições aprendidas, mostrou que o fator dominante era o disco: a compactação reduziu os arquivos, mas o tempo dos lotes só voltou ao normal com tabelas novas. No CDC, a remoção dos eventos de um titular eliminado percorre todos os arquivos da bronze a cada lote com eliminações. As tabelas atualizadas por `MERGE` (estado das internações e silver do CDC) não sofrem com isso, porque o `MERGE` reescreve os arquivos. Até a compactação automática, a mitigação é manual: `make lakehouse-compactar` para a speed layer, compacta as tabelas fragmentadas e a religa. A correção definitiva está nas melhorias de curto prazo.
 - **Interfaces administrativas sem autenticação.** O Prometheus, as interfaces do Spark e o portal não exigem login. O portal não exibe dados pessoais, só situações e totais. Localmente, isso é aceitável; em produção, ficariam atrás de um proxy com autenticação única.
+- **Sem motor de SQL sobre o lakehouse.** A bronze e a silver são consultadas pelo Spark (Apêndice A, *Consultando os dados*). O que é para consumo é publicado no DW, onde o Metabase e os clientes SQL chegam. Um motor como o Trino permitiria consultar o lakehouse com SQL, direto do BI.
 - **Segunda cópia simultânea da plataforma.** A instalação padrão usa sempre o projeto `case-saude`. Para rodar uma segunda cópia ao mesmo tempo (como num teste), é preciso definir outro `COMPOSE_PROJECT_NAME` no ambiente e usar outras portas. Nessa segunda cópia, os logs não chegam ao Loki, porque a coleta do Alloy filtra os containers pelo nome do projeto `case-saude`.
 - **Anos anteriores do SRAG.** A carga cobre 2024 a 2026. Os anos de 2019 a 2023 podem ser incluídos pela variável `SRAG_ANOS`, sem mudança de código.
 
@@ -510,7 +513,7 @@ Construir a plataforma num ambiente real, com recursos limitados, gerou problema
 | Busca da contagem de eliminações cada vez mais lenta | A consulta relia a bronze inteira a cada lote | Contagem incremental: o total anterior mais as eliminações do lote |
 | Speed layer sem processar, com o gerador aparentemente no ar | Depois de o Kafka ser recriado, o produtor idempotente do gerador entrou num estado do qual não saía sozinho, e todas as mensagens expiravam sem ser entregues. O alerta disparado ("Speed layer parada") apontava o sintoma, e não a causa | O gerador passou a encerrar com erro quando o produtor não consegue entregar (*fail fast*), e o Docker o reinicia com um produtor novo. Novo alerta "Nenhum evento chegando aos tópicos", medido no próprio Kafka, e o alerta da speed layer passou a exigir que haja eventos chegando. O portal diferencia as duas situações |
 | Speed layer em ciclo de reinícios | Defeito no conector Kafka do Spark 4.1.2 (relato #55236 no repositório do Spark): ao retomar um lote interrompido no meio, a query falhava ao calcular as métricas da fonte. Repetia-se a cada parada no meio de um lote | Contorno imediato com a geração de checkpoints versionada (`make streaming-recomecar`) e, depois, a **correção na origem**: atualização para o Spark 4.1.3, depois de confirmar no código-fonte da versão que a correção estava incluída. Durante a investigação, o escalonamento FAIR entre as queries foi testado e revertido |
-| Portal mostrando a speed layer parada há 14 horas | O mesmo defeito, disparado pela recriação do container durante a instalação do portal | **O portal detectou o problema no primeiro uso**, antes de qualquer usuário perceber pelos painéis |
+| Portal mostrando a speed layer parada há 14 horas | Duas causas somadas, encontradas na investigação: o defeito do Spark 4.1.2, que derrubava a aplicação ao retomar a query do CDC, e o gerador preso sem publicar (linha acima) | **O portal detectou o problema no primeiro uso**, antes de qualquer usuário perceber pelos painéis |
 
 A lição geral: **observabilidade e verificação automatizada pagaram o próprio custo**. Os diagnósticos foram feitos com as métricas do Prometheus, os logs centralizados e o `make smoke`. Cada correção foi validada pelos mesmos instrumentos, antes de ser considerada concluída.
 
@@ -533,6 +536,7 @@ A lição geral: **observabilidade e verificação automatizada pagaram o própr
 4. Catálogo transacional (Iceberg com um catálogo REST, ou Unity Catalog com Delta), para permitir escritores concorrentes e governança centralizada.
 5. Contratos de dados e testes de qualidade declarativos (por exemplo, Great Expectations ou Soda), versionados junto com as fontes. Combinam com a ingestão orientada a configuração: as regras de cada fonte ficariam no mesmo arquivo.
 6. Separar as queries de streaming em aplicações independentes, para isolar falhas e escalar cada fluxo de forma independente.
+7. Motor de SQL sobre o lakehouse (Trino ou Spark Thrift Server), para consultar a bronze e a silver com SQL, pelo Metabase ou por clientes como o DBeaver.
 
 **Caminho para produção:** implantar em Kubernetes, com o Spark e o Airflow escalando sob demanda, ou migrar para os serviços gerenciados listados na seção III.3. Em ambos os casos, entram segredos num cofre (como o Vault ou o gerenciador de segredos do provedor), alta disponibilidade do PostgreSQL e do Kafka, backup e testes de recuperação.
 
@@ -550,28 +554,27 @@ A plataforma atende aos oito requisitos do desafio com uma solução funcional e
 |---|---|
 | Docker Desktop (Windows ou macOS) ou Docker Engine (Linux) | Com Docker Compose v2 |
 | WSL2 com Ubuntu (apenas Windows) | O projeto deve ficar **dentro** do Linux (por exemplo, `~/projetos`), nunca em `/mnt/c` |
-| `git`, `make`, `openssl`, `jq`, `curl` e `python3` | No Ubuntu: `sudo apt install -y git make openssl jq curl python3` |
+| `git`, `make`, `openssl`, `jq`, `curl` e `python3` | No Ubuntu, instaladas no passo 4 da preparação do ambiente |
 | Memória para o Docker | Mínimo de 12 GB; recomendado 16 GB ou mais para a plataforma completa |
 | Disco livre | Cerca de 60 GB para imagens, dados e cache de build, **em SSD** (ver a observação abaixo) |
 
 **Por que SSD.** O streaming grava a cada poucos segundos no Kafka, no Silo, no Delta Lake e no PostgreSQL ao mesmo tempo, e esse tipo de carga (muitas gravações pequenas e aleatórias) é o ponto fraco de um disco mecânico. Medido neste projeto, com o disco de dados do Docker num HD, depois de dias de operação contínua: pressão de disco de 40% a 46% (`/proc/pressure/io`), CPU esperando o disco em 22% a 52% do tempo (`vmstat`) e lotes do streaming subindo de 13 para até 98 segundos, com a CPU quase ociosa. Num SSD, essa carga fica muito abaixo do limite.
-
-No Windows, os recursos do WSL ficam no arquivo `%UserProfile%\.wslconfig`. Configuração usada no desenvolvimento:
-
-```ini
-[wsl2]
-memory=20GB
-swap=8GB
-swapfile=C:\\WSL\\swap.vhdx
-kernelCommandLine=sysctl.vm.swappiness=10
-```
 
 ### Preparação do ambiente (Windows)
 
 Feita uma vez por máquina. Em Linux ou macOS, basta o Docker Engine (ou o Docker Desktop) com o Compose v2 e as ferramentas da tabela de pré-requisitos.
 
 1. **WSL e Ubuntu.** No PowerShell como administrador, rode `wsl --install -d Ubuntu` e reinicie o computador. Ao abrir o Ubuntu pela primeira vez, crie o usuário e a senha do Linux.
-2. **Recursos do WSL.** Crie o `%UserProfile%\.wslconfig` com o conteúdo acima, ajustando a `memory` ao que a máquina tem (deixe pelo menos 4 GB para o Windows), e rode `wsl --shutdown` no PowerShell para aplicar.
+2. **Recursos do WSL.** Crie o arquivo `%UserProfile%\.wslconfig` com o conteúdo abaixo (a configuração usada no desenvolvimento), ajustando a `memory` ao que a máquina tem (deixe pelo menos 4 GB para o Windows), e rode `wsl --shutdown` no PowerShell para aplicar.
+
+   ```ini
+   [wsl2]
+   memory=20GB
+   swap=8GB
+   swapfile=C:\\WSL\\swap.vhdx
+   kernelCommandLine=sysctl.vm.swappiness=10
+   ```
+
 3. **Docker Desktop.** Instale com a opção *Use the WSL 2 based engine*. Em **Settings → Resources → WSL Integration**, ative o **Ubuntu** e clique em **Apply & restart**. Se o disco C: tiver menos de 60 GB livres ou for um HD, mude o disco do Docker para um SSD em **Settings → Resources → Advanced → Disk image location**.
 4. **Ferramentas no Ubuntu.** Com o Docker Desktop em *Engine running*, abra o Ubuntu e rode:
 
@@ -585,6 +588,8 @@ O último comando deve mostrar a versão do Docker. Se mostrar um erro sobre `do
 
 ### Passo a passo
 
+**Antes de qualquer comando:** abra o Docker Desktop e espere o indicador no canto inferior esquerdo mostrar **Engine running**. Só então abra o Ubuntu. Se o Ubuntu for aberto antes, o Docker pode não ficar acessível nele (Apêndice B).
+
 ```bash
 mkdir -p ~/projetos && cd ~/projetos        # dentro do Linux, nunca em /mnt/c
 git clone https://github.com/Dx028/case-saude.git
@@ -595,7 +600,7 @@ make up         # constrói as imagens e sobe todos os serviços
 make smoke      # verifica a plataforma de ponta a ponta
 make metabase   # cria a conexão com o DW e os painéis do Metabase
 make gerador-start   # liga os eventos simulados e o simulador do prontuário
-make batch-srag      # carrega o SRAG do OpenDataSUS (cerca de 30 minutos)
+make batch-srag      # carrega o SRAG do OpenDataSUS (de 20 a 30 minutos)
 ```
 
 Em seguida, abra o **portal** em http://localhost:8090 para acompanhar a carga e chegar aos painéis.
@@ -604,7 +609,7 @@ O primeiro `make up` leva de 20 a 40 minutos (medido: cerca de 40 minutos com o 
 
 ### Rotina de uso
 
-- **Para ligar:** abra o Docker Desktop, espere o "Engine running", abra o Ubuntu e rode `make up`.
+- **Para ligar:** abra o Docker Desktop, espere o "Engine running", abra o Ubuntu e rode `make up`. O gerador de eventos não liga sozinho: para ter dados em tempo real, rode `make gerador-start`.
 - **Antes de demonstrar:** confira se o relógio do Windows e o da plataforma batem (Apêndice B). Um relógio desalinhado desloca a janela dos gráficos de tempo real.
 - **Para desligar a máquina:** rode `make down` **antes**. Ele para os serviços de forma ordenada, e os dados ficam preservados nos volumes. Desligar com a plataforma rodando pode deixar gravações pela metade (Apêndice B).
 
@@ -616,14 +621,31 @@ O primeiro `make up` leva de 20 a 40 minutos (medido: cerca de 40 minutos com o 
 | Airflow | http://localhost:8080 | `admin` | `AIRFLOW_ADMIN_PASSWORD` |
 | Metabase | http://localhost:3000 | `METABASE_ADMIN_EMAIL` | `METABASE_ADMIN_PASSWORD` |
 | Grafana | http://localhost:3001 | `admin` | `GRAFANA_ADMIN_PASSWORD` |
-| Kafka UI | http://localhost:8082 | `admin` | `KAFKA_UI_PASSWORD` |
+| Kafka UI (Kafbat) | http://localhost:8082 | `admin` | `KAFKA_UI_PASSWORD` |
 | Spark Master | http://localhost:8081 | — | — |
 | Speed layer (Spark UI, aba *Structured Streaming*) | http://localhost:4040 | — | — |
 | Console do Silo | http://localhost:9001 | `MINIO_ROOT_USER` | `MINIO_ROOT_PASSWORD` |
 | Prometheus | http://localhost:9090 | — | — |
 | PostgreSQL | `localhost:5432` (TLS obrigatório) | `POSTGRES_USER` | `POSTGRES_PASSWORD` |
 
-As senhas ficam no `.env`. Exemplo: `grep GRAFANA_ADMIN_PASSWORD .env`.
+**Não é preciso criar usuários nem senhas.** O `make setup` gera o `.env` a partir do `.env.example`, trocando cada `__GENERATE__` por uma senha aleatória, e as rotinas de inicialização criam os usuários com essas senhas na primeira subida. Os nomes de usuário são fixos (`admin`, `lakeadmin` e `admin@case-saude.local`). Para ver todos os acessos de uma vez:
+
+```bash
+grep -E '^(AIRFLOW_ADMIN|METABASE_ADMIN|GRAFANA_ADMIN|KAFKA_UI_PASSWORD|MINIO_ROOT|POSTGRES_USER|POSTGRES_PASSWORD|BI_READER)' .env
+```
+
+O Spark Master, a interface da speed layer, o Prometheus e o portal não pedem login (uma limitação conhecida, na seção IV). O `.env` fica só na máquina, com permissão restrita, e nunca vai para o Git. As senhas passam a valer na primeira subida: alterá-las depois no `.env` não muda as senhas já gravadas nos serviços.
+
+### Consultando os dados
+
+| Onde | Como | O que alcança |
+|---|---|---|
+| Metabase | Os 4 painéis da coleção **Case Saúde**, ou **Novo → Consulta SQL** no banco **DW Saúde** | A gold e a qualidade, sem dados pessoais |
+| Terminal | `make psql db=dw` | Todo o DW, com o usuário administrador |
+| Cliente SQL (DBeaver, por exemplo) | Servidor `localhost`, porta `5432`, banco `dw`, usuário `bi_reader`, com SSL e o certificado da CA da pasta `certs/` | A gold e a qualidade |
+| PySpark | `docker compose exec spark-master /opt/spark/bin/pyspark` e, dentro dele, `spark.read.format("delta").load("s3a://silver/<tabela>")` | As camadas landing, bronze e silver do lakehouse |
+
+Alguns pontos de partida no DW: `gold.fato_srag_semanal`, `gold.alerta_clinico_rt`, `qualidade.vw_ultima_verificacao` e `auditoria.controle_ingestao`. Os eventos rejeitados pela speed layer ficam no tópico `saude.eventos.dlq`, visível na Kafka UI. O Console do Silo mostra os arquivos do lakehouse, mas não consulta o conteúdo.
 
 ### Comandos principais
 
@@ -680,7 +702,7 @@ Os serviços são agrupados em *profiles*, definidos por `COMPOSE_PROFILES` no `
 | Sintoma | Causa provável e solução |
 |---|---|
 | `The command 'docker' could not be found in this WSL 2 distro` | Integração com o WSL desativada: Docker Desktop → Settings → Resources → WSL Integration → ativar o Ubuntu |
-| Erro de integração do Docker Desktop com o Ubuntu depois de reiniciar o WSL | Na mesma tela, desligue e religue o Ubuntu |
+| `failed to connect to the docker API at unix:///var/run/docker.sock`, geralmente depois de reiniciar o Windows ou o WSL | A integração com o Ubuntu não foi montada. Confirme que o Docker Desktop está em *Engine running*; em Settings → Resources → WSL Integration, desligue e religue o Ubuntu (**Apply & restart** a cada vez) e abra um terminal novo. Se persistir: feche o Docker Desktop, rode `wsl --shutdown`, abra o Docker Desktop, espere o *Engine running* e só então abra o Ubuntu. Com a integração ativa, `ls -l /usr/bin/docker` aponta para `/mnt/wsl/docker-desktop/...` |
 | `make smoke` acusa `connect-init: 0 de 1 saudáveis` logo depois do primeiro `make up` | O Kafka Connect demorou a ficar saudável, e o registro do conector desistiu antes. Rode `docker compose up -d connect-init`, espere 30 segundos e repita o `make smoke` |
 | `make up` falha com `port is already allocated` | Outro programa da máquina já usa a porta (por exemplo, um PostgreSQL local na 5432). Pare esse programa, ou troque a porta no `.env` (variáveis terminadas em `_PORT`) e rode `make up` de novo |
 | Scripts falham com `\r: command not found` | Quebras de linha do Windows: `git config --global core.autocrlf input` e clone novamente |
@@ -695,11 +717,30 @@ Os serviços são agrupados em *profiles*, definidos por `COMPOSE_PROFILES` no `
 | Master do Spark não responde ("All masters are unresponsive") | Memória de serviços ociosos no swap em disco lento: swap em SSD e `vm.swappiness=10` (Apêndice A) |
 | Tarefa do Airflow falha com `Invalid auth token` | Token da tarefa expirado com a máquina sobrecarregada. As retentativas resolvem, e a validade foi ampliada para 1 hora |
 | `DagBag import timeout` no Airflow | Importação lenta das DAGs em disco mecânico: o limite foi ampliado para 120 segundos |
-| Prometheus avisa `Server time is out of sync`; gráficos do Grafana terminam antes de "agora" | Relógio do Windows (usado pelo navegador) desalinhado do relógio da plataforma. Compare com `date -u` no Ubuntu. Se o Windows estiver errado, configure uma fonte de hora no PowerShell como administrador: `w32tm /config /manualpeerlist:"a.st1.ntp.br,0x9 time.windows.com,0x9" /syncfromflags:manual /update`, depois `Restart-Service w32time` e `w32tm /resync /force`. Se o Ubuntu estiver errado (comum depois de suspender o Windows): `wsl -d Ubuntu -u root hwclock -s` |
+| Prometheus avisa `Server time is out of sync`; gráficos do Grafana terminam antes de "agora" | Relógio do Windows (usado pelo navegador) desalinhado do relógio da plataforma. Para descobrir qual dos dois está errado, veja *Como conferir o relógio*, logo abaixo desta tabela. Se o Windows estiver errado, configure uma fonte de hora no PowerShell como administrador: `w32tm /config /manualpeerlist:"a.st1.ntp.br,0x9 time.windows.com,0x9" /syncfromflags:manual /update`, depois `Restart-Service w32time` e `w32tm /resync /force`. Se o Ubuntu estiver errado (comum depois de suspender o Windows): `wsl -d Ubuntu -u root hwclock -s` |
 | Containers reiniciando ou jobs interrompidos | Memória insuficiente: aumente o limite no `.wslconfig` ou suba menos profiles |
 | Metabase: `pg_hba.conf rejects connection ... no encryption` | SSL desativado na conexão do DW: ative-o com o modo `require` |
 | Comandos `docker` travados, sem resposta | Docker Desktop sobrecarregado: `timeout 20 docker info`; se não responder, reinicie o Docker Desktop e rode `wsl --shutdown` |
 | Senha do administrador do Metabase perdida | `docker compose run --rm --no-deps --entrypoint java metabase -jar /app/metabase.jar reset-password <email>` e acesse o link com o token gerado |
+
+
+### Como conferir o relógio
+
+A plataforma usa o relógio do Ubuntu, e o navegador usa o do Windows. Para saber qual está errado, compare os dois com a hora oficial, em UTC.
+
+No Ubuntu:
+
+```bash
+echo "Ubuntu: $(date -u +%T) | Oficial: $(curl -sI https://www.google.com | grep -i '^date' | awk '{print $6}')"
+```
+
+No PowerShell:
+
+```powershell
+"Windows (UTC): " + (Get-Date).ToUniversalTime().ToString("HH:mm:ss")
+```
+
+O que estiver diferente da hora oficial, por mais do que alguns segundos, é o que precisa de correção, com os comandos da tabela acima.
 
 ---
 
@@ -711,7 +752,7 @@ Os serviços são agrupados em *profiles*, definidos por `COMPOSE_PROFILES` no `
 ├── docker/      # Dockerfiles do Spark e do Airflow
 ├── generator/   # gerador de eventos hospitalares e simulador do prontuário
 ├── portal/      # portal da plataforma (FastAPI e página web)
-├── jobs/        # jobs Spark: batch, streaming (eventos e CDC) e biblioteca de mascaramento
+├── jobs/        # jobs Spark: batch, streaming (eventos e CDC), manutenção (compactação) e biblioteca de mascaramento
 ├── scripts/     # setup, inicialização, smoke test, segurança e painéis do Metabase
 ├── sql/         # inicialização do PostgreSQL, DW (schemas, papéis e segurança) e prontuário
 ├── tests/       # testes automatizados
