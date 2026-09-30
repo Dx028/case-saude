@@ -519,10 +519,11 @@ A lição geral: **observabilidade e verificação automatizada pagaram o própr
 **Curto prazo:**
 
 1. Compactação periódica (`OPTIMIZE`) e limpeza (`VACUUM`) das tabelas do streaming, feitas pela própria aplicação de streaming a cada certo número de lotes. Como ela é a única gravadora dessas tabelas, a manutenção não disputa gravações com outro processo, o que evita conflitos no Delta Lake sobre S3. Na bronze do CDC, a compactação ordenada pelo identificador do titular (`ZORDER`) permite que a remoção de um titular leia só os arquivos que o contêm. O `VACUUM` completa a eliminação, apagando fisicamente os arquivos antigos.
-2. TLS, SASL e ACLs no Kafka, e pseudonimização dos campos pessoais já no conector do Debezium.
-3. Registro de esquemas (Schema Registry) com Avro, para validar a estrutura dos eventos na publicação, e não só no consumo.
-4. Carga dos anos de 2019 a 2023 do SRAG.
-5. No portal: login integrado ao das demais ferramentas e notificações (por e-mail ou chat) quando uma carga falhar.
+2. **Tabelas de quarentena.** Hoje, a speed layer já separa os eventos inválidos numa DLQ no Kafka, com os motivos da rejeição, mas ela só existe enquanto durar a retenção do tópico. No lote do SRAG, a qualidade é controlada no conjunto, pelas regras do portão: valores inválidos viram nulo e duplicidades são removidas, sem registro de quais linhas foram afetadas. A proposta é uma tabela Delta de quarentena por fluxo, com o registro original, a regra violada, a execução e a data, e uma visão sem dados pessoais no DW, para acompanhar os volumes por motivo no painel de qualidade do Metabase. Isso permite investigar cada caso, corrigir a regra ou a fonte e reprocessar só o que foi rejeitado.
+3. TLS, SASL e ACLs no Kafka, e pseudonimização dos campos pessoais já no conector do Debezium.
+4. Registro de esquemas (Schema Registry) com Avro, para validar a estrutura dos eventos na publicação, e não só no consumo.
+5. Carga dos anos de 2019 a 2023 do SRAG.
+6. No portal: login integrado ao das demais ferramentas e notificações (por e-mail ou chat) quando uma carga falhar.
 
 **Médio prazo:**
 
@@ -565,9 +566,27 @@ swapfile=C:\\WSL\\swap.vhdx
 kernelCommandLine=sysctl.vm.swappiness=10
 ```
 
+### Preparação do ambiente (Windows)
+
+Feita uma vez por máquina. Em Linux ou macOS, basta o Docker Engine (ou o Docker Desktop) com o Compose v2 e as ferramentas da tabela de pré-requisitos.
+
+1. **WSL e Ubuntu.** No PowerShell como administrador, rode `wsl --install -d Ubuntu` e reinicie o computador. Ao abrir o Ubuntu pela primeira vez, crie o usuário e a senha do Linux.
+2. **Recursos do WSL.** Crie o `%UserProfile%\.wslconfig` com o conteúdo acima, ajustando a `memory` ao que a máquina tem (deixe pelo menos 4 GB para o Windows), e rode `wsl --shutdown` no PowerShell para aplicar.
+3. **Docker Desktop.** Instale com a opção *Use the WSL 2 based engine*. Em **Settings → Resources → WSL Integration**, ative o **Ubuntu** e clique em **Apply & restart**. Se o disco C: tiver menos de 60 GB livres ou for um HD, mude o disco do Docker para um SSD em **Settings → Resources → Advanced → Disk image location**.
+4. **Ferramentas no Ubuntu.** Com o Docker Desktop em *Engine running*, abra o Ubuntu e rode:
+
+```bash
+sudo apt update && sudo apt install -y git make openssl jq curl python3
+git config --global core.autocrlf input     # evita quebras de linha do Windows nos scripts
+docker info --format 'Docker {{.ServerVersion}} respondendo'
+```
+
+O último comando deve mostrar a versão do Docker. Se mostrar um erro sobre `docker.sock`, a integração com o Ubuntu não está ativa (Apêndice B).
+
 ### Passo a passo
 
 ```bash
+mkdir -p ~/projetos && cd ~/projetos        # dentro do Linux, nunca em /mnt/c
 git clone https://github.com/Dx028/case-saude.git
 cd case-saude
 
@@ -581,7 +600,7 @@ make batch-srag      # carrega o SRAG do OpenDataSUS (cerca de 30 minutos)
 
 Em seguida, abra o **portal** em http://localhost:8090 para acompanhar a carga e chegar aos painéis.
 
-O primeiro `make up` leva de 10 a 20 minutos, porque constrói as imagens do Spark e do Airflow. As execuções seguintes usam o cache e levam poucos minutos. Nenhum segredo é versionado: o `.env` e a pasta `certs/` são gerados localmente e estão no `.gitignore`.
+O primeiro `make up` leva de 20 a 40 minutos (medido: cerca de 40 minutos com o disco do Docker num HD), porque baixa as imagens base e constrói as do Spark e do Airflow. As execuções seguintes usam o cache e levam poucos minutos. **Não interrompa o `make up` enquanto ele cria os containers:** uma interrupção nesse momento deixa containers órfãos (Apêndice B). Se o `make smoke` logo em seguida acusar o `connect-init`, veja o Apêndice B: o Kafka Connect é o serviço mais lento para subir. Nenhum segredo é versionado: o `.env` e a pasta `certs/` são gerados localmente e estão no `.gitignore`.
 
 ### Rotina de uso
 
@@ -662,6 +681,8 @@ Os serviços são agrupados em *profiles*, definidos por `COMPOSE_PROFILES` no `
 |---|---|
 | `The command 'docker' could not be found in this WSL 2 distro` | Integração com o WSL desativada: Docker Desktop → Settings → Resources → WSL Integration → ativar o Ubuntu |
 | Erro de integração do Docker Desktop com o Ubuntu depois de reiniciar o WSL | Na mesma tela, desligue e religue o Ubuntu |
+| `make smoke` acusa `connect-init: 0 de 1 saudáveis` logo depois do primeiro `make up` | O Kafka Connect demorou a ficar saudável, e o registro do conector desistiu antes. Rode `docker compose up -d connect-init`, espere 30 segundos e repita o `make smoke` |
+| `make up` falha com `port is already allocated` | Outro programa da máquina já usa a porta (por exemplo, um PostgreSQL local na 5432). Pare esse programa, ou troque a porta no `.env` (variáveis terminadas em `_PORT`) e rode `make up` de novo |
 | Scripts falham com `\r: command not found` | Quebras de linha do Windows: `git config --global core.autocrlf input` e clone novamente |
 | Build ou serviços falham com `read-only file system` | Disco do Windows cheio. Libere espaço ou mova o disco do Docker (Settings → Resources → Advanced → Disk image location) |
 | Build falha com `unknown blob ... in history` | Cache de build corrompido por um desligamento no meio de uma gravação: `docker builder prune -af` (apaga só o cache) e `make up` |
